@@ -30,18 +30,38 @@
                     </button>
                 </div>
                 
-                <div class="space-y-2 overflow-y-auto max-h-[70vh]">
+                <div class="space-y-2 overflow-y-auto max-h-[60vh]">
+                    <!-- 循环渲染会话列表 (增加 group 类以控制悬停显示) -->
                     <div v-for="s in sessionList" :key="s.id" 
                          @click="currentSessionId = s.id"
-                         :class="['p-2.5 rounded cursor-pointer text-sm flex items-center justify-between transition', 
+                         :class="['p-2.5 rounded cursor-pointer text-sm flex items-center justify-between transition group', 
                                  currentSessionId === s.id ? 'bg-gray-800 text-emerald-400 font-medium' : 'text-gray-400 hover:bg-gray-800/50']">
                         <span class="truncate"><i class="fa-regular fa-message mr-2"></i>{{ s.title }}</span>
+                        <!-- 删除按钮，默认透明，悬停时显示，阻止冒泡以防触发外层切换事件 -->
+                        <button @click.stop="deleteSession(s.id)" class="text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition px-1">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
                     </div>
                 </div>
             </div>
 
-            <div class="border-t border-gray-800 pt-4">
-                <button @click="showConfig = true" class="w-full text-left text-xs text-gray-400 hover:text-gray-200 flex items-center">
+            <!-- 权限与配置区域 -->
+            <div class="border-t border-gray-800 pt-3 space-y-2">
+                <div class="bg-gray-950 p-2.5 rounded-lg border border-gray-800">
+                    <label class="block text-[11px] text-gray-400 mb-1.5"><i class="fa-solid fa-shield-halved mr-1 text-emerald-400"></i>系统写入权限</label>
+                    <div class="grid grid-cols-2 gap-1 bg-gray-900 p-0.5 rounded text-xs">
+                        <button @click="setPermission('full')" 
+                                :class="['py-1 rounded text-center transition', currentPermission === 'full' ? 'bg-emerald-600 text-white font-medium' : 'text-gray-400 hover:text-gray-200']">
+                            完全访问
+                        </button>
+                        <button @click="setPermission('ask')" 
+                                :class="['py-1 rounded text-center transition', currentPermission === 'ask' ? 'bg-amber-600 text-white font-medium' : 'text-gray-400 hover:text-gray-200']">
+                            请求批准
+                        </button>
+                    </div>
+                </div>
+
+                <button @click="showConfig = true" class="w-full text-left text-xs text-gray-400 hover:text-gray-200 flex items-center p-1">
                     <i class="fa-solid fa-gear mr-2"></i> API 凭据与模型配置
                 </button>
             </div>
@@ -52,7 +72,7 @@
             <div class="flex-1 overflow-y-auto p-6 space-y-6" id="chat-box">
                 <div v-if="currentDialogues.length === 0" class="text-center text-gray-600 mt-32">
                     <i class="fa-solid fa-code text-5xl mb-4 text-gray-700"></i>
-                    <p class="text-lg">输入编程任务，Agent 将自主调用本地环境探索、编写代码并运行测试。</p>
+                    <p class="text-lg">输入编程任务，Agent 将自主探索代码库、读写文件并运行测试闭环。</p>
                 </div>
 
                 <!-- 每一轮对话 -->
@@ -64,14 +84,14 @@
                         </div>
                     </div>
 
-                    <!-- 思考与工具调用卡片 (运行中或有日志时即展开) -->
+                    <!-- 1. 折叠的后台思考与操作过程 -->
                     <div v-if="dialogue.isRunning || (dialogue.traces && dialogue.traces.length > 0)" class="border border-gray-800 bg-gray-900/40 rounded-xl overflow-hidden text-xs">
                         <button @click="dialogue.isExpanded = !dialogue.isExpanded" 
                                 class="w-full px-4 py-2.5 bg-gray-900/80 hover:bg-gray-800/60 flex items-center justify-between text-gray-400 transition">
                             <div class="flex items-center space-x-2">
                                 <i class="fa-solid fa-brain text-emerald-400" :class="{'animate-pulse': dialogue.isRunning}"></i>
                                 <span class="font-medium text-gray-300">
-                                    {{ dialogue.isRunning ? (dialogue.traces.length > 0 ? `Agent 正在本地执行操作... (已执行 ${dialogue.traces.length} 步)` : 'Agent 正在思考并准备环境...') : `已完成自主调试 (共 ${dialogue.traces.length} 个操作)` }}
+                                    {{ dialogue.isRunning ? (dialogue.traces.length > 0 ? `Agent 正在本地执行操作... (已执行 ${dialogue.traces.length} 步)` : 'Agent 正在思考并准备环境...') : `已完成后台操作 (共 ${dialogue.traces.length} 步)` }}
                                 </span>
                             </div>
                             <div class="flex items-center space-x-2">
@@ -80,10 +100,9 @@
                             </div>
                         </button>
 
-                        <!-- 展开的工具执行日志 (支持独立内部滚动) -->
                         <div v-show="dialogue.isExpanded" :id="'trace-box-' + dIdx" 
-                             class="p-4 space-y-3 bg-gray-950/80 border-t border-gray-800/60 max-h-96 overflow-y-auto font-mono text-[11px] text-gray-400">
-                            <div v-for="(trace, tIdx) in dialogue.traces" :key="tIdx" class="space-y-1.5 border-l-2 border-gray-800 pl-3">
+                             class="p-4 space-y-3 bg-gray-950/80 border-t border-gray-800/60 max-h-72 overflow-y-auto font-mono text-[11px] text-gray-400">
+                            <div v-for="(trace, tIdx) in dialogue.traces" :key="trace.id || tIdx" class="space-y-1.5 border-l-2 border-gray-800 pl-3">
                                 <div v-if="trace.type === 'step'" class="text-emerald-500 font-bold">
                                     ▶ Iteration {{ trace.step }}/{{ trace.max_steps }}
                                 </div>
@@ -93,7 +112,7 @@
                                         <span class="text-[10px] text-gray-500">{{ trace.tool_call_id }}</span>
                                     </div>
                                     <div class="text-gray-400 mb-1 break-all">Args: {{ JSON.stringify(trace.args) }}</div>
-                                    <div v-if="trace.output" class="text-gray-400 whitespace-pre-wrap bg-black/40 p-2 rounded max-h-48 overflow-y-auto border border-gray-800/50">
+                                    <div v-if="trace.output" class="text-gray-400 whitespace-pre-wrap bg-black/40 p-2 rounded max-h-36 overflow-y-auto border border-gray-800/50">
                                         {{ trace.output }}
                                     </div>
                                     <div v-else class="text-emerald-400/80 text-[10px] animate-pulse">
@@ -104,7 +123,49 @@
                         </div>
                     </div>
 
-                    <!-- 最终总结正文 -->
+                    <!-- 2. 正文核心区域：待批准的写入代码卡片 -->
+                    <div v-for="(appr, aIdx) in dialogue.approvals" :key="appr.tool_call_id || aIdx" 
+                         class="bg-gray-900/90 border border-amber-500/40 rounded-xl overflow-hidden shadow-lg">
+                        <div class="bg-amber-950/30 border-b border-amber-500/30 px-4 py-3 flex items-center justify-between">
+                            <div class="flex items-center space-x-2 text-amber-300 font-medium text-sm">
+                                <i class="fa-solid fa-file-code text-amber-400 text-base"></i>
+                                <span>请求写入文件：<code class="text-emerald-400 font-mono bg-black/40 px-2 py-0.5 rounded">{{ appr.args.path }}</code></span>
+                            </div>
+                            <span class="text-xs px-2 py-0.5 rounded" 
+                                  :class="appr.status === 'pending' ? 'bg-amber-500/20 text-amber-300 animate-pulse' : (appr.status === 'approved' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300')">
+                                {{ appr.status === 'pending' ? '等待用户审批' : (appr.status === 'approved' ? '已批准写入' : '已拒绝') }}
+                            </span>
+                        </div>
+
+                        <div class="p-4 bg-gray-950">
+                            <div class="text-xs text-gray-400 mb-2 flex justify-between items-center">
+                                <span>代码变更内容预览：</span>
+                                <span class="text-[11px] text-gray-500 font-mono">{{ appr.name === 'write_file' ? '全量覆盖/新建' : '局部代码块替换' }}</span>
+                            </div>
+                            <pre class="bg-black/60 rounded-lg p-3 text-xs overflow-x-auto max-h-80 border border-gray-800"><code class="language-python">{{ appr.name === 'write_file' ? appr.args.content : (appr.args.new_snippet || JSON.stringify(appr.args, null, 2)) }}</code></pre>
+                        </div>
+
+                        <div class="bg-gray-900 px-4 py-3 border-t border-gray-800 flex justify-end gap-3 items-center">
+                            <template v-if="appr.status === 'pending'">
+                                <span class="text-xs text-gray-400 mr-2">批准后将写入本地磁盘并继续执行后续测试</span>
+                                <button @click="sendApproval(false, appr)" class="px-4 py-1.5 rounded-lg text-xs font-medium text-gray-300 bg-gray-800 hover:bg-red-600/80 hover:text-white transition">
+                                    <i class="fa-solid fa-xmark mr-1.5"></i>拒绝
+                                </button>
+                                <button @click="sendApproval(true, appr)" class="px-4 py-1.5 rounded-lg text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 transition shadow-sm">
+                                    <i class="fa-solid fa-check mr-1.5"></i>批准写入本地
+                                </button>
+                            </template>
+                            <template v-else>
+                                <span class="text-xs text-gray-500 italic">
+                                    <i class="fa-solid fa-circle-check mr-1 text-emerald-500" v-if="appr.status === 'approved'"></i>
+                                    <i class="fa-solid fa-circle-xmark mr-1 text-red-500" v-else></i>
+                                    该操作已完成审批
+                                </span>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- 3. 最终总结正文 -->
                     <div v-if="dialogue.finalContent" class="bg-gray-900/90 border border-gray-800 p-5 rounded-xl text-sm text-gray-200 leading-relaxed markdown-body"
                          v-html="renderMarkdown(dialogue.finalContent)">
                     </div>
@@ -115,7 +176,7 @@
             <div class="p-4 border-t border-gray-800 bg-gray-900/50">
                 <div class="max-w-4xl mx-auto flex gap-3">
                     <input v-model="inputText" @keyup.enter="sendMessage" :disabled="isGlobalRunning"
-                           placeholder="输入编程任务 (例如：使用递归实现 decode_string 并补全测试)..."
+                           placeholder="输入编程任务 (例如：实现快速排序算法并编写测试用例)..."
                            class="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 text-gray-100 placeholder-gray-600 disabled:opacity-50">
                     <button @click="sendMessage" :disabled="isGlobalRunning || !inputText.trim()"
                             class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 text-white px-5 py-2.5 rounded-lg text-sm transition flex items-center">
@@ -150,17 +211,26 @@
     </div>
 
     <script>
-        const { createApp, ref, computed, nextTick } = Vue;
+        const { createApp, ref, computed, nextTick, watch } = Vue;
 
         createApp({
             setup() {
-                const sessionList = ref([]);
-                const currentSessionId = ref('');
-                const sessionDialogues = ref({});
+                // 【核心变动】初始化时，优先尝试从浏览器的 localStorage 中读取历史数据
+                const sessionList = ref(JSON.parse(localStorage.getItem('agent_sessions') || '[]'));
+                const currentSessionId = ref(localStorage.getItem('agent_current_session') || '');
+                const sessionDialogues = ref(JSON.parse(localStorage.getItem('agent_dialogues') || '{}'));
+                const currentPermission = ref(localStorage.getItem('agent_permission') || 'full');
+                
                 const inputText = ref('');
                 const isGlobalRunning = ref(false);
                 const showConfig = ref(false);
                 const config = ref({ apiKey: '', baseUrl: '', modelName: '' });
+
+                // 【核心变动】利用 Vue 的 watch，深度监听数据变动，自动静默同步到浏览器存储中
+                watch(sessionList, (val) => localStorage.setItem('agent_sessions', JSON.stringify(val)), { deep: true });
+                watch(sessionDialogues, (val) => localStorage.setItem('agent_dialogues', JSON.stringify(val)), { deep: true });
+                watch(currentSessionId, (val) => localStorage.setItem('agent_current_session', val));
+                watch(currentPermission, (val) => localStorage.setItem('agent_permission', val));
 
                 const currentDialogues = computed(() => {
                     return sessionDialogues.value[currentSessionId.value] || [];
@@ -173,17 +243,12 @@
 
                 const scrollToBottom = (dIdx = null) => {
                     nextTick(() => {
-                        // 滚动主对话框
                         const box = document.getElementById('chat-box');
                         if (box) box.scrollTop = box.scrollHeight;
-
-                        // 同步滚动当前正在运行的 trace 盒子
                         if (dIdx !== null) {
                             const traceBox = document.getElementById(`trace-box-${dIdx}`);
                             if (traceBox) traceBox.scrollTop = traceBox.scrollHeight;
                         }
-
-                        // 高亮代码块
                         document.querySelectorAll('pre code').forEach((el) => {
                             hljs.highlightElement(el);
                         });
@@ -197,7 +262,8 @@
                         body: JSON.stringify({
                             api_key: config.value.apiKey || null,
                             base_url: config.value.baseUrl || null,
-                            model_name: config.value.modelName || null
+                            model_name: config.value.modelName || null,
+                            permission_mode: currentPermission.value
                         })
                     });
                     const data = await res.json();
@@ -207,9 +273,49 @@
                     currentSessionId.value = newId;
                 };
 
+                // 【新增逻辑】删除指定的会话对话
+                const deleteSession = async (id) => {
+                    // 从列表和字典中抹去
+                    sessionList.value = sessionList.value.filter(s => s.id !== id);
+                    delete sessionDialogues.value[id];
+                    
+                    // 通知后端一并释放内存（就算失败了也不影响前端表现）
+                    try {
+                        await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
+                    } catch (e) {
+                        console.error('删除后端会话失败', e);
+                    }
+
+                    // 如果删除的是当前处于高亮激活状态的会话，需要自动切到另一个会话或新建
+                    if (currentSessionId.value === id) {
+                        if (sessionList.value.length > 0) {
+                            currentSessionId.value = sessionList.value[0].id;
+                        } else {
+                            createNewSession();
+                        }
+                    }
+                };
+
+                const setPermission = (mode) => {
+                    currentPermission.value = mode;
+                    createNewSession();
+                };
+
                 const saveConfigAndRecreate = () => {
                     showConfig.value = false;
                     createNewSession();
+                };
+
+                const sendApproval = async (approved, appr) => {
+                    appr.status = approved ? 'approved' : 'rejected';
+                    await fetch('/api/chat/approve', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            session_id: currentSessionId.value,
+                            approved: approved
+                        })
+                    });
                 };
 
                 const sendMessage = async () => {
@@ -221,72 +327,109 @@
 
                     const dialogues = sessionDialogues.value[currentSessionId.value];
                     
-                    // 【新增逻辑】：如果是当前会话的第一条消息，自动根据内容重命名标题
                     if (dialogues.length === 0) {
                         const sessionObj = sessionList.value.find(s => s.id === currentSessionId.value);
                         if (sessionObj) {
-                            // 截取前 12 个字符，超出的部分用省略号
                             let newTitle = prompt.trim().substring(0, 12);
                             if (prompt.length > 12) newTitle += '...';
                             sessionObj.title = newTitle;
                         }
                     }
-                    const newDialogue = {
+
+                    const newDialogueRaw = {
                         userPrompt: prompt,
                         isRunning: true,
-                        isExpanded: true,  // 发送时默认展开，实时显示运行细节
+                        isExpanded: true,
                         traces: [],
+                        approvals: [],
                         finalContent: ''
                     };
-                    dialogues.push(newDialogue);
+                    dialogues.push(newDialogueRaw);
                     const dIdx = dialogues.length - 1;
+                    const activeDialogue = dialogues[dIdx];
+                    
                     scrollToBottom(dIdx);
 
                     const eventSource = new EventSource(`/api/chat/stream?session_id=${currentSessionId.value}&prompt=${encodeURIComponent(prompt)}`);
 
                     eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
+
                         if (data.type === 'step_start') {
-                            newDialogue.traces.push({ type: 'step', step: data.step, max_steps: data.max_steps });
+                            activeDialogue.traces.push({ 
+                                id: 'step_' + Date.now() + Math.random(),
+                                type: 'step', 
+                                step: data.step, 
+                                max_steps: data.max_steps 
+                            });
+                        } else if (data.type === 'approval_required') {
+                            activeDialogue.approvals.push({
+                                name: data.name,
+                                args: data.args,
+                                tool_call_id: data.tool_call_id,
+                                status: 'pending'
+                            });
                         } else if (data.type === 'tool_call') {
-                            newDialogue.traces.push({ type: 'tool', name: data.name, args: data.args, tool_call_id: data.tool_call_id, output: null });
+                            activeDialogue.traces.push({ 
+                                id: data.tool_call_id,
+                                type: 'tool', 
+                                name: data.name, 
+                                args: data.args, 
+                                tool_call_id: data.tool_call_id, 
+                                output: null 
+                            });
                         } else if (data.type === 'tool_output') {
-                            const lastTool = [...newDialogue.traces].reverse().find(t => t.type === 'tool' && t.tool_call_id === data.tool_call_id);
+                            const lastTool = activeDialogue.traces.slice().reverse().find(t => t.type === 'tool' && t.tool_call_id === data.tool_call_id);
                             if (lastTool) lastTool.output = data.output;
                         } else if (data.type === 'finish') {
-                            newDialogue.finalContent = data.content;
-                            newDialogue.isRunning = false;
-                            newDialogue.isExpanded = false; // 只有在全部结束输出正文后才自动折叠
+                            activeDialogue.finalContent = data.content;
+                            activeDialogue.isRunning = false;
+                            activeDialogue.isExpanded = false;
                             eventSource.close();
                             isGlobalRunning.value = false;
                         } else if (data.type === 'error') {
-                            newDialogue.finalContent = `> ⚠️ **执行出错**: ${data.message}`;
-                            newDialogue.isRunning = false;
+                            activeDialogue.finalContent = `> ⚠️ **执行出错**: ${data.message}`;
+                            activeDialogue.isRunning = false;
                             eventSource.close();
                             isGlobalRunning.value = false;
                         }
+
                         scrollToBottom(dIdx);
                     };
 
                     eventSource.onerror = () => {
-                        newDialogue.isRunning = false;
+                        activeDialogue.isRunning = false;
                         eventSource.close();
                         isGlobalRunning.value = false;
                     };
                 };
 
-                createNewSession();
+                // 【核心变动】只在第一次没有任何会话数据时，才自动新建空会话
+                if (sessionList.value.length === 0) {
+                    createNewSession();
+                } else {
+                    // 如果有历史记录，稍微延迟一下渲染代码高亮，保证用户看到历史也是好看的
+                    nextTick(() => {
+                        document.querySelectorAll('pre code').forEach((el) => {
+                            hljs.highlightElement(el);
+                        });
+                    });
+                }
 
                 return {
                     sessionList,
                     currentSessionId,
                     currentDialogues,
+                    currentPermission,
                     inputText,
                     isGlobalRunning,
                     showConfig,
                     config,
                     createNewSession,
+                    deleteSession,
+                    setPermission,
                     saveConfigAndRecreate,
+                    sendApproval,
                     sendMessage,
                     renderMarkdown
                 };
