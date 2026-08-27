@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <title>Coding Agent Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .markdown-body pre { background-color: #0d1117; border-radius: 6px; padding: 12px; margin: 10px 0; overflow-x: auto; }
+        .markdown-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+        .markdown-body p { margin-bottom: 8px; line-height: 1.6; }
+        .markdown-body h2 { font-size: 1.25rem; font-weight: bold; margin-top: 16px; margin-bottom: 8px; color: #34d399; }
+        .markdown-body h3 { font-size: 1.1rem; font-weight: 600; margin-top: 12px; margin-bottom: 6px; color: #a7f3d0; }
+        .markdown-body ul { list-style-type: disc; padding-left: 20px; margin-bottom: 8px; }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 font-sans h-screen overflow-hidden">
+    <div id="app" class="flex h-full">
+        <!-- 侧边栏 -->
+        <div class="w-64 bg-gray-900 border-r border-gray-800 flex flex-col justify-between p-4">
+            <div>
+                <div class="flex items-center justify-between mb-6">
+                    <span class="font-bold text-lg text-emerald-400"><i class="fa-solid fa-terminal mr-2"></i>Agent Studio</span>
+                    <button @click="createNewSession" class="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1 rounded text-sm transition">
+                        <i class="fa-solid fa-plus"></i> 新建
+                    </button>
+                </div>
+                
+                <div class="space-y-2 overflow-y-auto max-h-[70vh]">
+                    <div v-for="s in sessionList" :key="s.id" 
+                         @click="currentSessionId = s.id"
+                         :class="['p-2.5 rounded cursor-pointer text-sm flex items-center justify-between transition', 
+                                 currentSessionId === s.id ? 'bg-gray-800 text-emerald-400 font-medium' : 'text-gray-400 hover:bg-gray-800/50']">
+                        <span class="truncate"><i class="fa-regular fa-message mr-2"></i>{{ s.title }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="border-t border-gray-800 pt-4">
+                <button @click="showConfig = true" class="w-full text-left text-xs text-gray-400 hover:text-gray-200 flex items-center">
+                    <i class="fa-solid fa-gear mr-2"></i> API 凭据与模型配置
+                </button>
+            </div>
+        </div>
+
+        <!-- 主对话区域 -->
+        <div class="flex-1 flex flex-col justify-between bg-gray-950">
+            <div class="flex-1 overflow-y-auto p-6 space-y-6" id="chat-box">
+                <div v-if="currentDialogues.length === 0" class="text-center text-gray-600 mt-32">
+                    <i class="fa-solid fa-code text-5xl mb-4 text-gray-700"></i>
+                    <p class="text-lg">输入编程任务，Agent 将自主调用本地环境探索、编写代码并运行测试。</p>
+                </div>
+
+                <!-- 每一轮对话 -->
+                <div v-for="(dialogue, dIdx) in currentDialogues" :key="dIdx" class="space-y-4 max-w-4xl mx-auto">
+                    <!-- 用户输入 -->
+                    <div class="flex justify-end">
+                        <div class="bg-emerald-600/20 text-emerald-200 border border-emerald-500/30 px-4 py-2.5 rounded-xl max-w-2xl text-sm leading-relaxed">
+                            {{ dialogue.userPrompt }}
+                        </div>
+                    </div>
+
+                    <!-- 思考与工具调用卡片 (运行中或有日志时即展开) -->
+                    <div v-if="dialogue.isRunning || (dialogue.traces && dialogue.traces.length > 0)" class="border border-gray-800 bg-gray-900/40 rounded-xl overflow-hidden text-xs">
+                        <button @click="dialogue.isExpanded = !dialogue.isExpanded" 
+                                class="w-full px-4 py-2.5 bg-gray-900/80 hover:bg-gray-800/60 flex items-center justify-between text-gray-400 transition">
+                            <div class="flex items-center space-x-2">
+                                <i class="fa-solid fa-brain text-emerald-400" :class="{'animate-pulse': dialogue.isRunning}"></i>
+                                <span class="font-medium text-gray-300">
+                                    {{ dialogue.isRunning ? (dialogue.traces.length > 0 ? `Agent 正在本地执行操作... (已执行 ${dialogue.traces.length} 步)` : 'Agent 正在思考并准备环境...') : `已完成自主调试 (共 ${dialogue.traces.length} 个操作)` }}
+                                </span>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <span v-if="dialogue.isRunning" class="text-[11px] text-emerald-400 animate-pulse">执行中</span>
+                                <i class="fa-solid" :class="dialogue.isExpanded ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                            </div>
+                        </button>
+
+                        <!-- 展开的工具执行日志 (支持独立内部滚动) -->
+                        <div v-show="dialogue.isExpanded" :id="'trace-box-' + dIdx" 
+                             class="p-4 space-y-3 bg-gray-950/80 border-t border-gray-800/60 max-h-96 overflow-y-auto font-mono text-[11px] text-gray-400">
+                            <div v-for="(trace, tIdx) in dialogue.traces" :key="tIdx" class="space-y-1.5 border-l-2 border-gray-800 pl-3">
+                                <div v-if="trace.type === 'step'" class="text-emerald-500 font-bold">
+                                    ▶ Iteration {{ trace.step }}/{{ trace.max_steps }}
+                                </div>
+                                <div v-if="trace.type === 'tool'" class="bg-gray-900 border border-gray-800 rounded p-2 text-gray-300">
+                                    <div class="text-amber-400 font-semibold mb-1 flex items-center justify-between">
+                                        <span><i class="fa-solid fa-wrench mr-1"></i>{{ trace.name }}</span>
+                                        <span class="text-[10px] text-gray-500">{{ trace.tool_call_id }}</span>
+                                    </div>
+                                    <div class="text-gray-400 mb-1 break-all">Args: {{ JSON.stringify(trace.args) }}</div>
+                                    <div v-if="trace.output" class="text-gray-400 whitespace-pre-wrap bg-black/40 p-2 rounded max-h-48 overflow-y-auto border border-gray-800/50">
+                                        {{ trace.output }}
+                                    </div>
+                                    <div v-else class="text-emerald-400/80 text-[10px] animate-pulse">
+                                        <i class="fa-solid fa-spinner fa-spin mr-1"></i>正在本地执行此工具...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 最终总结正文 -->
+                    <div v-if="dialogue.finalContent" class="bg-gray-900/90 border border-gray-800 p-5 rounded-xl text-sm text-gray-200 leading-relaxed markdown-body"
+                         v-html="renderMarkdown(dialogue.finalContent)">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 底部输入栏 -->
+            <div class="p-4 border-t border-gray-800 bg-gray-900/50">
+                <div class="max-w-4xl mx-auto flex gap-3">
+                    <input v-model="inputText" @keyup.enter="sendMessage" :disabled="isGlobalRunning"
+                           placeholder="输入编程任务 (例如：使用递归实现 decode_string 并补全测试)..."
+                           class="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 text-gray-100 placeholder-gray-600 disabled:opacity-50">
+                    <button @click="sendMessage" :disabled="isGlobalRunning || !inputText.trim()"
+                            class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 text-white px-5 py-2.5 rounded-lg text-sm transition flex items-center">
+                        <i class="fa-solid fa-paper-plane mr-2"></i>发送
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 设置弹窗 -->
+        <div v-if="showConfig" class="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+            <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md p-6 space-y-4">
+                <h3 class="font-bold text-gray-100"><i class="fa-solid fa-sliders mr-2"></i>API & 模型设置</h3>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                    <input v-model="config.apiKey" type="password" placeholder="留空则读取本地 .env" class="w-full bg-gray-950 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Base URL</label>
+                    <input v-model="config.baseUrl" placeholder="https://api.deepseek.com/v1" class="w-full bg-gray-950 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Model Name</label>
+                    <input v-model="config.modelName" placeholder="deepseek-chat" class="w-full bg-gray-950 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200">
+                </div>
+                <div class="flex justify-end gap-2 pt-2">
+                    <button @click="showConfig = false" class="px-4 py-1.5 rounded text-sm text-gray-400 hover:bg-gray-800">取消</button>
+                    <button @click="saveConfigAndRecreate" class="bg-emerald-600 text-white px-4 py-1.5 rounded text-sm hover:bg-emerald-500">保存并新建会话</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, nextTick } = Vue;
+
+        createApp({
+            setup() {
+                const sessionList = ref([]);
+                const currentSessionId = ref('');
+                const sessionDialogues = ref({});
+                const inputText = ref('');
+                const isGlobalRunning = ref(false);
+                const showConfig = ref(false);
+                const config = ref({ apiKey: '', baseUrl: '', modelName: '' });
+
+                const currentDialogues = computed(() => {
+                    return sessionDialogues.value[currentSessionId.value] || [];
+                });
+
+                const renderMarkdown = (text) => {
+                    if (!text) return '';
+                    return marked.parse(text);
+                };
+
+                const scrollToBottom = (dIdx = null) => {
+                    nextTick(() => {
+                        // 滚动主对话框
+                        const box = document.getElementById('chat-box');
+                        if (box) box.scrollTop = box.scrollHeight;
+
+                        // 同步滚动当前正在运行的 trace 盒子
+                        if (dIdx !== null) {
+                            const traceBox = document.getElementById(`trace-box-${dIdx}`);
+                            if (traceBox) traceBox.scrollTop = traceBox.scrollHeight;
+                        }
+
+                        // 高亮代码块
+                        document.querySelectorAll('pre code').forEach((el) => {
+                            hljs.highlightElement(el);
+                        });
+                    });
+                };
+
+                const createNewSession = async () => {
+                    const res = await fetch('/api/sessions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            api_key: config.value.apiKey || null,
+                            base_url: config.value.baseUrl || null,
+                            model_name: config.value.modelName || null
+                        })
+                    });
+                    const data = await res.json();
+                    const newId = data.session_id;
+                    sessionList.value.push({ id: newId, title: `会话 #${newId}` });
+                    sessionDialogues.value[newId] = [];
+                    currentSessionId.value = newId;
+                };
+
+                const saveConfigAndRecreate = () => {
+                    showConfig.value = false;
+                    createNewSession();
+                };
+
+                const sendMessage = async () => {
+                    if (!inputText.value.trim() || isGlobalRunning.value) return;
+                    
+                    const prompt = inputText.value;
+                    inputText.value = '';
+                    isGlobalRunning.value = true;
+
+                    const dialogues = sessionDialogues.value[currentSessionId.value];
+                    
+                    // 【新增逻辑】：如果是当前会话的第一条消息，自动根据内容重命名标题
+                    if (dialogues.length === 0) {
+                        const sessionObj = sessionList.value.find(s => s.id === currentSessionId.value);
+                        if (sessionObj) {
+                            // 截取前 12 个字符，超出的部分用省略号
+                            let newTitle = prompt.trim().substring(0, 12);
+                            if (prompt.length > 12) newTitle += '...';
+                            sessionObj.title = newTitle;
+                        }
+                    }
+                    const newDialogue = {
+                        userPrompt: prompt,
+                        isRunning: true,
+                        isExpanded: true,  // 发送时默认展开，实时显示运行细节
+                        traces: [],
+                        finalContent: ''
+                    };
+                    dialogues.push(newDialogue);
+                    const dIdx = dialogues.length - 1;
+                    scrollToBottom(dIdx);
+
+                    const eventSource = new EventSource(`/api/chat/stream?session_id=${currentSessionId.value}&prompt=${encodeURIComponent(prompt)}`);
+
+                    eventSource.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'step_start') {
+                            newDialogue.traces.push({ type: 'step', step: data.step, max_steps: data.max_steps });
+                        } else if (data.type === 'tool_call') {
+                            newDialogue.traces.push({ type: 'tool', name: data.name, args: data.args, tool_call_id: data.tool_call_id, output: null });
+                        } else if (data.type === 'tool_output') {
+                            const lastTool = [...newDialogue.traces].reverse().find(t => t.type === 'tool' && t.tool_call_id === data.tool_call_id);
+                            if (lastTool) lastTool.output = data.output;
+                        } else if (data.type === 'finish') {
+                            newDialogue.finalContent = data.content;
+                            newDialogue.isRunning = false;
+                            newDialogue.isExpanded = false; // 只有在全部结束输出正文后才自动折叠
+                            eventSource.close();
+                            isGlobalRunning.value = false;
+                        } else if (data.type === 'error') {
+                            newDialogue.finalContent = `> ⚠️ **执行出错**: ${data.message}`;
+                            newDialogue.isRunning = false;
+                            eventSource.close();
+                            isGlobalRunning.value = false;
+                        }
+                        scrollToBottom(dIdx);
+                    };
+
+                    eventSource.onerror = () => {
+                        newDialogue.isRunning = false;
+                        eventSource.close();
+                        isGlobalRunning.value = false;
+                    };
+                };
+
+                createNewSession();
+
+                return {
+                    sessionList,
+                    currentSessionId,
+                    currentDialogues,
+                    inputText,
+                    isGlobalRunning,
+                    showConfig,
+                    config,
+                    createNewSession,
+                    saveConfigAndRecreate,
+                    sendMessage,
+                    renderMarkdown
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
