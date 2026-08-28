@@ -30,7 +30,7 @@ Language Requirement:
 SENSITIVE_TOOLS = {"write_file", "edit_file"}
 
 class CodingAgentSession:
-    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None, max_steps: int = 15, permission_mode: str = "full"):
+    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None, max_steps: int = 15, permission_mode: str = "full", history_messages: list = None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.model_name = model_name or os.getenv("MODEL_NAME", "deepseek-chat")
@@ -41,10 +41,11 @@ class CodingAgentSession:
             api_key=self.api_key,
             base_url=self.base_url
         )
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         
-        # 新增：用于精准匹配 tool_call_id 的等待机制
-        self.pending_approvals: Dict[str, asyncio.Future] = {}
+        # 核心修改：如果有历史记忆则继承，否则使用初始 System Prompt
+        self.messages = history_messages if history_messages else [{"role": "system", "content": SYSTEM_PROMPT}]
+        
+        self.pending_approvals = {}  # 保持上一轮方案B的字典逻辑不变
 
     def resolve_approval(self, tool_call_id: str, approved: bool):
         """用户在前端点击允许或拒绝时调用，精准唤醒对应的工具调用"""
@@ -84,7 +85,7 @@ class CodingAgentSession:
                 break
 
             message = response.choices[0].message
-            self.messages.append(message)
+            self.messages.append(message.model_dump(exclude_none=True))
 
             if not message.tool_calls:
                 yield {"type": "finish", "content": message.content}

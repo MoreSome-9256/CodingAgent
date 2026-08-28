@@ -11,6 +11,8 @@ def run_command(command: str) -> str:
             shell=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",    # 强制以 UTF-8 解码命令行输出
+            errors="replace",    # 核心防御：遇到无法解码的乱码字符直接替换为问号，绝不抛出异常让程序崩溃
             timeout=30
         )
         output = f"Exit Code: {result.returncode}\n"
