@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>小人跳跃小游戏</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: linear-gradient(135deg, #1e3c72, #2a5298);
+    font-family: "Segoe UI", Arial, "Microsoft YaHei", sans-serif;
+  }
+  .game-card {
+    background: #fff;
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.35);
+    max-width: 92vw;
+  }
+  h1 {
+    text-align: center;
+    color: #2a5298;
+    margin-bottom: 10px;
+    font-size: 22px;
+    letter-spacing: 1px;
+  }
+  .hud {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    font-size: 18px;
+    font-weight: bold;
+    color: #333;
+    background: #f4f7ff;
+    border-radius: 10px;
+    margin-bottom: 12px;
+  }
+  .hud .score { color: #222; }
+  .hud .high { color: #e67e22; }
+  canvas {
+    display: block;
+    background: #eaf4ff;
+    border: 2px solid #c9d9f0;
+    border-radius: 10px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .controls {
+    margin-top: 12px;
+    text-align: center;
+    color: #555;
+    font-size: 14px;
+    line-height: 1.8;
+  }
+  .controls b { color: #2a5298; }
+  #audioNote { margin-top: 8px; }
+  .restart-btn {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 8px 22px;
+    background: linear-gradient(135deg, #2a5298, #1e3c72);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    cursor: pointer;
+    transition: transform .1s;
+  }
+  .restart-btn:hover { transform: scale(1.04); }
+  .footer { color: #cfd8ff; margin-top: 14px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="game-card">
+    <h1>🏃 小人跳跃</h1>
+    <div class="hud">
+      <span class="score">得分：<span id="score">0</span></span>
+      <span class="high">最高分：<span id="high">0</span></span>
+    </div>
+    <canvas id="game" width="800" height="400"></canvas>
+    <div class="controls">
+      <b>空格键</b> 或 <b>点击画面</b> / <b>触摸屏幕</b> 跳跃<br>
+      <button class="restart-btn" id="restartBtn">重新开始</button>
+    </div>
+    <div id="audioNote" style="font-size:12px;color:#999;text-align:center;"></div>
+  </div>
+  <div class="footer">仿 Google 断网小恐龙 · 自包含 HTML 游戏</div>
+
+<script>
+(function () {
+  // ============ 画布与基础 ============
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;   // 800
+  const H = canvas.height;  // 400
+
+  // roundRect 兼容性 polyfill（老浏览器回退为普通 rect）
+  if (!ctx.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+      this.rect(x, y, w, h);
+    };
+  }
+
+  const groundY = 340;        // 地面 Y 坐标
+
+  // ============ DOM 引用 ============
+  const scoreEl = document.getElementById('score');
+  const highEl = document.getElementById('high');
+  const restartBtn = document.getElementById('restartBtn');
+  const audioNote = document.getElementById('audioNote');
+
+  // ============ 音效（Web Audio 简单提示音） ============
+  let audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  function playTone(freq, dur, type, vol) {
+    ensureAudio();
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const t = audioCtx.currentTime;
+    osc.type = type || 'square';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol || 0.08, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(t); osc.stop(t + dur);
+  }
+  audioNote.textContent = '提示：点击游戏区域后声音自动开启';
+
+  // ============ 玩家（小人） ============
+  const PLAYER_W = 40;
+  const PLAYER_H = 54;
+  const player = {
+    x: 80,
+    w: PLAYER_W,
+    h: PLAYER_H,
+    y: 0,          // 底部 Y（脚部）
+    vy: 0,         // 垂直速度
+    onGround: true,
+    runFrame: 0,
+  };
+
+  // 物理参数
+  const GRAVITY = 2400;     // 像素/秒²
+  const JUMP_VY = -720;     // 跳跃初速度
+  const BODY_GROUND = groundY;
+
+  function resetPlayer() {
+    player.y = BODY_GROUND - player.h;
+    player.vy = 0;
+    player.onGround = true;
+    player.runFrame = 0;
+  }
+
+  // 最大跳跃高度动画（腿）计时
+  const runSpeed = 10;
+
+  // ============ 障碍物 ============
+  let obstacles = [];
+  let spawnTimer = 0;
+  const BASE_SPAWN = 1.3; // 秒
+
+  function spawnObstacle(speed) {
+    // 随机高度，形成不同大小障碍
+    const sizes = [
+      { w: 22, h: 44 },   // 小仙人掌
+      { w: 28, h: 56 },   // 中
+      { w: 34, h: 68 },   // 大
+    ];
+    const s = sizes[Math.floor(Math.random() * sizes.length)];
+    obstacles.push({
+      x: W + 30,
+      w: s.w,
+      h: s.h,
+      y: BODY_GROUND - s.h,
+      passed: false,
+      jitter: Math.random() * 0.5 - 0.25,
+    });
+    // 下一个生成间隔
+    const gap = (30 + Math.random() * 45) / speed; // 距离换算成时间
+    spawnTimer = Math.max(0.7, gap);
+  }
+
+  // ============ 游戏状态 ============
+  let state = 'START';   // START / RUNNING / GAMEOVER
+  let score = 0;
+  let highScore = 0;
+  let speed = 300;       // 基础滚动速度 px/s
+  let startTime = 0;
+
+  // 加载最高分
+  try {
+    highScore = parseInt(localStorage.getItem('jumpGameHigh') || '0', 10) || 0;
+  } catch (e) { highScore = 0; }
+  highEl.textContent = highScore;
+
+  // ============ 碰撞检测 ============
+  function rectHit(a, b) {
+    return (
+      a.x < b.x + b.w &&
+      a.x + a.w > b.x &&
+      a.y < b.y + b.h &&
+      a.y + a.h > b.y
+    );
+  }
+
+  function checkCollision() {
+    const playerBox = {
+      x: player.x + 6,
+      y: player.y + 6,
+      w: player.w - 12,
+      h: player.h - 10,
+    };
+    for (const ob of obstacles) {
+      const obBox = { x: ob.x + 4, y: ob.y + 4, w: ob.w - 8, h: ob.h - 6 };
+      if (rectHit(playerBox, obBox)) {
+        state = 'GAMEOVER';
+        playTone(180, 0.4, 'sawtooth', 0.1);
+        playTone(120, 0.5, 'square', 0.08);
+        if (score > highScore) {
+          highScore = score;
+          highEl.textContent = highScore;
+          try { localStorage.setItem('jumpGameHigh', String(highScore)); } catch (e) {}
+        }
+        break;
+      }
+    }
+  }
+
+  // ============ 更新逻辑 ============
+  let lastTime = 0;
+
+  function update(dt) {
+    if (state === 'RUNNING') {
+      // 分数递增
+      const add = dt * 10 * (1 + speed / 300);
+      score += add;
+      scoreEl.textContent = Math.floor(score);
+
+      // 难度递增：随时间加速
+      const elapsed = (performance.now() - startTime) / 1000;
+      speed = 300 + elapsed * 12;
+      const cap = Math.min(speed * 1.6, 1500);
+      spawnTimer -= dt;
+
+      // 玩家物理
+      if (!player.onGround) {
+        player.vy += GRAVITY * dt;
+        player.y += player.vy * dt;
+        if (player.y >= BODY_GROUND - player.h) {
+          player.y = BODY_GROUND - player.h;
+          player.vy = 0;
+          player.onGround = true;
+        }
+      }
+
+      // 障碍物移动
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const ob = obstacles[i];
+        ob.x -= speed * dt;
+        // 若是已通过且分数未计数，加分
+        if (!ob.passed && ob.x + ob.w < player.x) {
+          ob.passed = true;
+        }
+        if (ob.x + ob.w < -40) {
+          obstacles.splice(i, 1);
+        }
+      }
+
+      // 生成新障碍
+      if (spawnTimer <= 0) {
+        spawnObstacle(speed);
+      }
+
+      // 跑动动画
+      player.runFrame += dt * runSpeed;
+      if (player.onGround) player.runFrame += dt * 8;
+
+      checkCollision();
+    }
+  }
+
+  // ============ 绘制 ============
+  function drawGround() {
+    ctx.strokeStyle = '#7aa5cf';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, groundY);
+    ctx.lineTo(W, groundY);
+    ctx.stroke();
+    // 移动的地面小点，制造滚动感
+    ctx.fillStyle = '#a9c7e6';
+    const dots = Math.floor(W / 24);
+    for (let i = 0; i < dots; i++) {
+      const dx = ((i * 24 - (performance.now() * speed / 100) % 24) );
+      ctx.beginPath();
+      ctx.arc((dx + 1400) % W, groundY + 8 + (i % 2) * 5, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawPlayer() {
+    const px = player.x;
+    const py = player.y; // 脚部 y
+    const h = player.h;
+    // 腿部摆动相位
+    const legSwing = Math.sin(player.runFrame) * 8;
+    const airborne = !player.onGround;
+
+    // 身体（衣服）
+    ctx.fillStyle = '#3b82f6';
+    ctx.beginPath();
+    ctx.roundRect(px + 6, py + 14, player.w - 12, h - 30, 6);
+    ctx.fill();
+    // 头（圆）
+    ctx.fillStyle = '#f7c8a0';
+    ctx.beginPath();
+    ctx.arc(px + player.w / 2, py + 8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    // 眼睛
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(px + player.w / 2 + 3, py + 7, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 腿
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#1e3a5f';
+    ctx.lineCap = 'round';
+    if (airborne) {
+      // 空中双腿并拢稍微弯曲
+      ctx.beginPath();
+      ctx.moveTo(px + 14, py + h - 16);
+      ctx.lineTo(px + 14, py + h - 4);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px + 26, py + h - 16);
+      ctx.lineTo(px + 26, py + h - 2);
+      ctx.stroke();
+    } else {
+      // 跑步摆动
+      ctx.beginPath();
+      ctx.moveTo(px + 14, py + h - 18);
+      ctx.lineTo(px + 14 + legSwing, py + h - 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px + 26, py + h - 18);
+      ctx.lineTo(px + 26 - legSwing, py + h - 2);
+      ctx.stroke();
+    }
+
+    // 手臂
+    ctx.strokeStyle = '#2a5298';
+    if (airborne) {
+      ctx.beginPath();
+      ctx.moveTo(px + 8, py + 22);
+      ctx.lineTo(px - 4, py + 12);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px + 32, py + 22);
+      ctx.lineTo(px + 44, py + 12);
+      ctx.stroke();
+    } else {
+      const armSwing = Math.sin(player.runFrame + Math.PI) * 6;
+      ctx.beginPath();
+      ctx.moveTo(px + 10, py + 20);
+      ctx.lineTo(px + 4 + armSwing, py + 28);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px + 30, py + 20);
+      ctx.lineTo(px + 36 - armSwing, py + 28);
+      ctx.stroke();
+    }
+  }
+
+  function drawObstacle(ob) {
+    // 画一个仙人掌样式的障碍
+    const x = ob.x, y = ob.y, w = ob.w, h = ob.h;
+    ctx.fillStyle = '#2e8b57';
+    // 主体
+    ctx.beginPath();
+    ctx.rect(x + w * 0.2, y, w * 0.6, h);
+    ctx.fill();
+    // 左侧枝
+    ctx.beginPath();
+    ctx.rect(x, y + h * 0.3, w * 0.25, h * 0.18);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.rect(x, y + h * 0.3, w * 0.18, h * 0.45);
+    ctx.fill();
+    // 右侧枝
+    ctx.beginPath();
+    ctx.rect(x + w * 0.8, y + h * 0.25, w * 0.22, h * 0.18);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.rect(x + w * 0.82, y + h * 0.25, w * 0.18, h * 0.4);
+    ctx.fill();
+    // 顶部小刺
+    ctx.fillStyle = '#1f6b3d';
+    ctx.beginPath();
+    ctx.rect(x + w * 0.45, y - 4, 4, 6);
+    ctx.fill();
+  }
+
+  function drawOverlay() {
+    ctx.fillStyle = 'rgba(30,60,110,0.72)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 34px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (state === 'START') {
+      ctx.fillText('🏃 小人跳跃', W / 2, H / 2 - 50);
+      ctx.font = '18px Arial';
+      ctx.fillText('按下空格 / 点击画面 开始跳跃前进', W / 2, H / 2 + 6);
+      ctx.fillText('躲避障碍物，坚持越久得分越高', W / 2, H / 2 + 38);
+    } else if (state === 'GAMEOVER') {
+      ctx.font = 'bold 38px Arial';
+      ctx.fillText('💥 游戏结束', W / 2, H / 2 - 40);
+      ctx.font = '22px Arial';
+      ctx.fillText('得分：' + Math.floor(score), W / 2, H / 2 + 8);
+      ctx.fillText('最高分：' + Math.floor(highScore), W / 2, H / 2 + 42);
+      ctx.font = '16px Arial';
+      ctx.fillStyle = '#ffd';
+      ctx.fillText('点击任意处重新开始', W / 2, H / 2 + 86);
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // 背景云朵
+    drawClouds();
+
+    drawGround();
+    for (const ob of obstacles) drawObstacle(ob);
+    drawPlayer();
+
+    if (state !== 'RUNNING') drawOverlay();
+  }
+
+  let clouds = [
+    { x: 120, y: 60, s: 1 }, { x: 450, y: 100, s: 1.4 }, { x: 700, y: 70, s: 0.8 }
+  ];
+  function drawClouds() {
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    for (const c of clouds) {
+      const r = 16 * c.s;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+      ctx.arc(c.x + r, c.y - 4, r * 0.8, 0, Math.PI * 2);
+      ctx.arc(c.x + r * 1.6, c.y, r * 0.9, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ============ 主循环 ============
+  function gameLoop(now) {
+    if (lastTime === 0) lastTime = now;
+    let dt = (now - lastTime) / 1000;
+    lastTime = now;
+    if (dt > 0.05) dt = 0.05; // 防止切屏跳帧
+
+    if (state === 'RUNNING') update(dt);
+
+    // 慢速移动云朵
+    for (const c of clouds) {
+      c.x -= (state === 'GAMEOVER' ? 0 : 12) * dt;
+      if (c.x < -80) { c.x = W + 80; c.y = 40 + Math.random() * 120; }
+    }
+
+    draw();
+    requestAnimationFrame(gameLoop);
+  }
+
+  // ============ 交互 ============
+  function action() {
+    ensureAudio();
+    if (state === 'START') {
+      startGame();
+    } else if (state === 'RUNNING') {
+      jump();
+    } else if (state === 'GAMEOVER') {
+      startGame();
+    }
+  }
+
+  function jump() {
+    if (player.onGround) {
+      player.vy = JUMP_VY;
+      player.onGround = false;
+      playTone(440, 0.12, 'sine', 0.06);
+    }
+  }
+
+  function startGame() {
+    state = 'RUNNING';
+    score = 0;
+    speed = 300;
+    obstacles = [];
+    spawnTimer = 1.3;
+    lastTime = 0;
+    startTime = performance.now();
+    resetPlayer();
+    scoreEl.textContent = '0';
+  }
+
+  // 键盘
+  document.addEventListener('keydown', function (e) {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      e.preventDefault();
+      action();
+    }
+  });
+
+  // 鼠标点击画布
+  canvas.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    action();
+  });
+  // 触摸
+  canvas.addEventListener('touchstart', function (e) {
+    e.preventDefault();
+    action();
+  }, { passive: false });
+
+  restartBtn.addEventListener('click', function () {
+    startGame();
+  });
+
+  // ============ 初始化 ============
+  resetPlayer();
+  clouds = [
+    { x: 120, y: 60, s: 1 }, { x: 450, y: 100, s: 1.4 }, { x: 700, y: 70, s: 0.8 }
+  ];
+  // 初始演示障碍（待开始状态先展示）
+  spawnObstacle(speed);
+  obstacles[0].x = W - 200;
+
+  requestAnimationFrame(gameLoop);
+})();
+</script>
+</body>
+</html>

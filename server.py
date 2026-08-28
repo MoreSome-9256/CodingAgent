@@ -24,6 +24,9 @@ class CreateSessionRequest(BaseModel):
     model_name: Optional[str] = None
     permission_mode: Optional[str] = "full"  # "full" 或 "ask"
 
+class UpdatePermissionRequest(BaseModel):
+    permission_mode: str
+
 class ApprovalRequest(BaseModel):
     session_id: str
     tool_call_id: str  # 新增此字段
@@ -50,6 +53,20 @@ def delete_session(session_id: str):
     if session_id in sessions:
         del sessions[session_id]
     database.delete_session_db(session_id)  # 同步删除数据库记录
+    return {"status": "ok"}
+
+@app.put("/api/sessions/{session_id}/permission")
+def update_permission(session_id: str, req: UpdatePermissionRequest):
+    # 1. 更新内存中的状态
+    if session_id in sessions:
+        sessions[session_id].permission_mode = req.permission_mode
+        database.save_session(session_id, req.permission_mode, sessions[session_id].messages)
+    # 2. 如果内存中没有（已被回收），直接更新数据库
+    else:
+        db_record = database.load_session(session_id)
+        if db_record:
+            _, history = db_record
+            database.save_session(session_id, req.permission_mode, history)
     return {"status": "ok"}
 
 @app.post("/api/chat/approve")

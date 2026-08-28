@@ -61,6 +61,20 @@
                     </div>
                 </div>
 
+                <div class="bg-gray-950 p-2.5 rounded-lg border border-gray-800">
+                    <label class="block text-[11px] text-gray-400 mb-1.5"><i class="fa-solid fa-route mr-1 text-emerald-400"></i>任务执行模式</label>
+                    <div class="grid grid-cols-2 gap-1 bg-gray-900 p-0.5 rounded text-xs">
+                        <button @click="currentExecutionMode = 'auto'" 
+                                :class="['py-1 rounded text-center transition', currentExecutionMode === 'auto' ? 'bg-emerald-600 text-white font-medium' : 'text-gray-400 hover:text-gray-200']">
+                            自动化
+                        </button>
+                        <button @click="currentExecutionMode = 'plan'" 
+                                :class="['py-1 rounded text-center transition', currentExecutionMode === 'plan' ? 'bg-indigo-600 text-white font-medium' : 'text-gray-400 hover:text-gray-200']">
+                            引导计划
+                        </button>
+                    </div>
+                </div>
+
                 <button @click="showConfig = true" class="w-full text-left text-xs text-gray-400 hover:text-gray-200 flex items-center p-1">
                     <i class="fa-solid fa-gear mr-2"></i> API 凭据与模型配置
                 </button>
@@ -239,6 +253,9 @@
                 const currentSessionId = ref(localStorage.getItem('agent_current_session') || '');
                 const sessionDialogues = ref(JSON.parse(localStorage.getItem('agent_dialogues') || '{}'));
                 const currentPermission = ref(localStorage.getItem('agent_permission') || 'full');
+                // 【新增】执行模式的状态与持久化
+                const currentExecutionMode = ref(localStorage.getItem('agent_exec_mode') || 'auto');
+                watch(currentExecutionMode, (val) => localStorage.setItem('agent_exec_mode', val));
                 
                 const inputText = ref('');
                 const isGlobalRunning = ref(false);
@@ -315,9 +332,20 @@
                     }
                 };
 
-                const setPermission = (mode) => {
+                const setPermission = async (mode) => {
                     currentPermission.value = mode;
-                    createNewSession();
+                    // 向后端同步当前会话的新权限模式，不新建窗口
+                    if (currentSessionId.value) {
+                        try {
+                            await fetch(`/api/sessions/${currentSessionId.value}/permission`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ permission_mode: mode })
+                            });
+                        } catch (e) {
+                            console.error('更新权限失败', e);
+                        }
+                    }
                 };
 
                 const saveConfigAndRecreate = () => {
@@ -377,8 +405,14 @@
                         }
                     }
 
+                    // 【核心修改】：根据模式向大模型静默注入行为约束
+                    let payloadPrompt = prompt;
+                    if (currentExecutionMode.value === 'plan') {
+                        payloadPrompt = prompt + "\n\n(系统强制指令：当前处于【引导计划模式】。请先输出一份带编号的详细代码实现拆解计划，并询问我是否同意。在我明确回复同意之前，你只允许进行环境读取，严禁调用 write_file 或 edit_file 写入任何代码！)";
+                    }
+
                     const newDialogueRaw = {
-                        userPrompt: prompt,
+                        userPrompt: prompt, // 界面上依然只显示用户原本清爽的输入
                         isRunning: true,
                         isExpanded: true,
                         traces: [],
@@ -391,7 +425,7 @@
                     
                     scrollToBottom(dIdx);
 
-                    const eventSource = new EventSource(`/api/chat/stream?session_id=${currentSessionId.value}&prompt=${encodeURIComponent(prompt)}`);
+                    const eventSource = new EventSource(`/api/chat/stream?session_id=${currentSessionId.value}&prompt=${encodeURIComponent(payloadPrompt)}`);
 
                     eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -461,6 +495,7 @@
                     sessionList,
                     currentSessionId,
                     currentDialogues,
+                    currentExecutionMode,
                     currentPermission,
                     inputText,
                     isGlobalRunning,
