@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 from agent import CodingAgentSession
 import database
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
+import os
+import shutil
+from fastapi import File, UploadFile
 
 load_dotenv()
 
@@ -46,6 +49,18 @@ def create_session(req: CreateSessionRequest):
     # 新建时立刻存入数据库，保留初始上下文
     database.save_session(session_id, agent_session.permission_mode, agent_session.messages)
     return {"session_id": session_id}
+
+# 确保文件存放目录存在
+os.makedirs("uploads", exist_ok=True)
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    file_path = os.path.join("uploads", file.filename)
+    # 将文件写入本地磁盘
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    # 将相对路径返回给前端
+    return {"file_path": file_path}
 
 # 【新增】删除指定会话，释放内存
 @app.delete("/api/sessions/{session_id}")

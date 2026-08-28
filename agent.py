@@ -141,7 +141,13 @@ class CodingAgentSession:
 
                 tool_func = AVAILABLE_TOOLS.get(func_name)
                 if tool_func:
-                    output = tool_func(**func_args)
+                    # 【核心修复】：增加 try...except 拦截参数解包错误
+                    try:
+                        output = tool_func(**func_args)
+                    except TypeError as e:
+                        output = f"Tool Argument Error: {str(e)}. Please check the tool's required parameters in the schema and try again."
+                    except Exception as e:
+                        output = f"Tool Execution Error: {str(e)}"
                 else:
                     output = f"Error: Tool {func_name} not found."
 

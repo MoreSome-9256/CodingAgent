@@ -51,6 +51,28 @@
     cursor: pointer;
     touch-action: manipulation;
   }
+  .stage {
+    position: relative;
+    display: block;
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto;
+  }
+  .stage canvas {
+    width: 100%;
+    height: auto;
+  }
+  /* 上方叠加的 GIF 动图角色层 */
+  #playerImg {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 5;
+    pointer-events: none;
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-select: none;
+  }
   .controls {
     margin-top: 12px;
     text-align: center;
@@ -83,7 +105,10 @@
       <span class="score">得分：<span id="score">0</span></span>
       <span class="high">最高分：<span id="high">0</span></span>
     </div>
-    <canvas id="game" width="800" height="400"></canvas>
+    <div class="stage">
+      <img id="playerImg" alt="小人" draggable="false">
+      <canvas id="game" width="800" height="400"></canvas>
+    </div>
     <div class="controls">
       <b>空格键</b> 或 <b>点击画面</b> / <b>触摸屏幕</b> 跳跃<br>
       <button class="restart-btn" id="restartBtn">重新开始</button>
@@ -139,9 +164,37 @@
   }
   audioNote.textContent = '提示：点击游戏区域后声音自动开启';
 
+  // ============ 玩家（小人）素材 ============
+  // 使用 DOM 层 <img> 叠加在 Canvas 上方，以此让 GIF 动图正常循环播放
+  const playerImg = document.getElementById('playerImg');
+  const cosmoImg = playerImg;                 // 别名
+  playerImg.src = '/preview/uploads/cosmo.gif';
+  let cosmoImgLoaded = false;
+  let cosmoImgFailed = false;
+  playerImg.addEventListener('load', function () {
+    cosmoImgLoaded = true;
+  });
+  playerImg.addEventListener('error', function () {
+    cosmoImgFailed = true;
+  });
+
+  // Canvas 逻辑尺寸
+  const LOGIC_W = 800, LOGIC_H = 400;
+  // 实际显示尺寸比例（处理 CSS 缩放，让 img 与 canvas 内容像素对齐）
+  let stageScale = 1;
+  function updateScale() {
+    const rect = canvas.getBoundingClientRect();
+    stageScale = rect.width / LOGIC_W;
+    // 把 img 尺寸设为玩家碰撞盒 × 缩放，保证对齐
+    const iw = player.w * stageScale;
+    const ih = player.h * stageScale;
+    playerImg.style.width = iw + 'px';
+    playerImg.style.height = ih + 'px';
+  }
+
   // ============ 玩家（小人） ============
-  const PLAYER_W = 40;
-  const PLAYER_H = 54;
+  const PLAYER_W = 46;
+  const PLAYER_H = 58;
   const player = {
     x: 80,
     w: PLAYER_W,
@@ -315,9 +368,23 @@
     const px = player.x;
     const py = player.y; // 脚部 y
     const h = player.h;
-    // 腿部摆动相位
+
+    // 注意：GIF 动图已由 DOM 层 <img id="playerImg"> 叠加显示并实时跟随，
+    // 这里仅保留一个"贴图加载失败"时的兜底卡通小人绘制。
+
+    // 若贴图正常（加载中或已加载完成且未失败），canvas 无需重复绘制角色
+    if (cosmoImgLoaded && !cosmoImgFailed) return;
+
+    // ---- 兜底绘制（素材未加载成功时保留原卡通小人） ----
     const legSwing = Math.sin(player.runFrame) * 8;
     const airborne = !player.onGround;
+
+    // 提示一条淡色提示（素材加载中/失败）
+    ctx.fillStyle = cosmoImgFailed ? 'rgba(200,0,0,0.45)' : 'rgba(0,0,0,0.15)';
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(cosmoImgFailed ? '贴图加载失败' : '角色加载中…', px, py - 8);
 
     // 身体（衣服）
     ctx.fillStyle = '#3b82f6';
@@ -340,7 +407,6 @@
     ctx.strokeStyle = '#1e3a5f';
     ctx.lineCap = 'round';
     if (airborne) {
-      // 空中双腿并拢稍微弯曲
       ctx.beginPath();
       ctx.moveTo(px + 14, py + h - 16);
       ctx.lineTo(px + 14, py + h - 4);
@@ -350,7 +416,6 @@
       ctx.lineTo(px + 26, py + h - 2);
       ctx.stroke();
     } else {
-      // 跑步摆动
       ctx.beginPath();
       ctx.moveTo(px + 14, py + h - 18);
       ctx.lineTo(px + 14 + legSwing, py + h - 2);
@@ -482,8 +547,31 @@
       if (c.x < -80) { c.x = W + 80; c.y = 40 + Math.random() * 120; }
     }
 
+    syncPlayerImg();
     draw();
     requestAnimationFrame(gameLoop);
+  }
+
+  // ============ 同步叠加层角色位置（GIF 动图跟随小人坐标） ============
+  function syncPlayerImg() {
+    // 每帧校准缩放（窗口/容器尺寸变化时保持对齐）
+    updateScale();
+    // 换算容器坐标系：逻辑坐标 × scale
+    const left = player.x * stageScale;
+    const top = player.y * stageScale;
+    playerImg.style.left = left + 'px';
+    playerImg.style.top = top + 'px';
+    // 素材加载前的占位提示
+    if (!cosmoImgLoaded && !cosmoImgFailed) {
+      playerImg.style.opacity = '0.6';
+    } else {
+      playerImg.style.opacity = '1';
+    }
+    // 隐藏 / 显示叠层：
+    // - 素材失败时隐藏，避免叠一个错误图标
+    // - 游戏结束时隐藏，让"游戏结束"遮罩完整显示
+    playerImg.style.display =
+      (cosmoImgFailed || state === 'GAMEOVER') ? 'none' : 'block';
   }
 
   // ============ 交互 ============
@@ -549,6 +637,15 @@
   // 初始演示障碍（待开始状态先展示）
   spawnObstacle(speed);
   obstacles[0].x = W - 200;
+
+  updateScale();
+  syncPlayerImg();
+
+  // 窗口 / 容器尺寸变化时重新校准，确保 GIF 层对齐
+  window.addEventListener('resize', function () {
+    updateScale();
+    syncPlayerImg();
+  });
 
   requestAnimationFrame(gameLoop);
 })();

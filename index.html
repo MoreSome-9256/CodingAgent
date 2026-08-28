@@ -19,7 +19,18 @@
     </style>
 </head>
 <body class="bg-gray-950 text-gray-100 font-sans h-screen overflow-hidden">
-    <div id="app" class="flex h-full">
+    <div id="app" class="flex h-full relative" 
+         @dragenter.prevent="onDragEnter" 
+         @dragleave.prevent="onDragLeave" 
+         @dragover.prevent 
+         @drop.prevent="onDrop">
+         
+        <!-- 全屏拖拽高亮遮罩 -->
+        <div v-if="isDragging" class="absolute inset-0 bg-emerald-900/30 backdrop-blur-sm z-50 flex items-center justify-center border-4 border-dashed border-emerald-500 pointer-events-none transition-all">
+            <div class="bg-gray-900/90 text-emerald-400 font-bold text-2xl px-8 py-4 rounded-2xl shadow-2xl flex items-center">
+                <i class="fa-solid fa-cloud-arrow-up text-4xl mr-4"></i> 松开鼠标以上传文件
+            </div>
+        </div>
         <!-- 侧边栏 -->
         <div class="w-64 bg-gray-900 border-r border-gray-800 flex flex-col justify-between p-4">
             <div>
@@ -91,9 +102,21 @@
 
                 <!-- 每一轮对话 -->
                 <div v-for="(dialogue, dIdx) in currentDialogues" :key="dIdx" class="space-y-4 max-w-4xl mx-auto">
-                    <!-- 用户输入 -->
-                    <div class="flex justify-end">
-                        <div class="bg-emerald-600/20 text-emerald-200 border border-emerald-500/30 px-4 py-2.5 rounded-xl max-w-2xl text-sm leading-relaxed">
+                    <!-- 用户输入与附件卡片 -->
+                    <div class="flex flex-col items-end space-y-2">
+                        <!-- 附件卡片 -->
+                        <div v-if="dialogue.attachedFile" class="bg-gray-800/80 border border-gray-700/80 rounded-2xl p-3 flex flex-col items-center justify-center w-24 h-24 shadow-md">
+                            <div class="w-8 h-8 rounded mb-2 flex items-center justify-center" 
+                                 :class="dialogue.attachedFile.isMedia ? 'bg-indigo-500' : 'bg-red-600'">
+                                <i :class="dialogue.attachedFile.isMedia ? 'fa-regular fa-image' : 'fa-solid fa-code'" class="text-white text-sm"></i>
+                            </div>
+                            <span class="text-xs text-gray-300 w-full text-center truncate px-1" :title="dialogue.attachedFile.name">
+                                {{ dialogue.attachedFile.name }}
+                            </span>
+                        </div>
+                        
+                        <!-- 文本消息 -->
+                        <div v-if="dialogue.userPrompt" class="bg-emerald-600/20 text-emerald-200 border border-emerald-500/30 px-4 py-2.5 rounded-xl max-w-2xl text-sm leading-relaxed">
                             {{ dialogue.userPrompt }}
                         </div>
                     </div>
@@ -207,14 +230,31 @@
 
             <!-- 底部输入栏 -->
             <div class="p-4 border-t border-gray-800 bg-gray-900/50">
-                <div class="max-w-4xl mx-auto flex gap-3">
-                    <input v-model="inputText" @keyup.enter="sendMessage" :disabled="isGlobalRunning"
-                           placeholder="输入编程任务 (例如：实现快速排序算法并编写测试用例)..."
-                           class="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 text-gray-100 placeholder-gray-600 disabled:opacity-50">
-                    <button @click="sendMessage" :disabled="isGlobalRunning || !inputText.trim()"
-                            class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 text-white px-5 py-2.5 rounded-lg text-sm transition flex items-center">
-                        <i class="fa-solid fa-paper-plane mr-2"></i>发送
-                    </button>
+                <div class="max-w-4xl mx-auto w-full">
+                    <!-- 附件显示徽章 -->
+                    <div v-if="selectedFile" class="mb-2 inline-flex items-center bg-gray-800 border border-gray-700 px-3 py-1.5 rounded-lg w-fit">
+                        <i class="fa-regular fa-file-lines text-emerald-400 mr-2"></i>
+                        <span class="text-xs text-gray-300 truncate max-w-xs">{{ selectedFile.name }}</span>
+                        <button @click="selectedFile = null" class="text-gray-500 hover:text-red-400 ml-3 transition">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+
+                    <div class="flex gap-3 relative">
+                        <!-- 回形针手动上传按钮 -->
+                        <button @click="$refs.fileInput.click()" class="absolute left-3 top-2.5 text-gray-400 hover:text-emerald-400 transition z-10 p-1">
+                            <i class="fa-solid fa-paperclip"></i>
+                        </button>
+                        <input type="file" ref="fileInput" @change="onFileChange" class="hidden">
+                        
+                        <input v-model="inputText" @keyup.enter="sendMessage" :disabled="isGlobalRunning"
+                               placeholder="输入任务，或将文件拖拽至窗口内..."
+                               class="flex-1 bg-gray-950 border border-gray-800 rounded-lg pl-11 pr-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 text-gray-100 placeholder-gray-600 disabled:opacity-50">
+                        <button @click="sendMessage" :disabled="isGlobalRunning || (!inputText.trim() && !selectedFile)"
+                                class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 text-white px-5 py-2.5 rounded-lg text-sm transition flex items-center">
+                            <i class="fa-solid fa-paper-plane mr-2"></i>发送
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -261,6 +301,25 @@
                 const isGlobalRunning = ref(false);
                 const showConfig = ref(false);
                 const config = ref({ apiKey: '', baseUrl: '', modelName: '' });
+
+                // 【新增】拖拽与文件状态
+                const isDragging = ref(false);
+                const selectedFile = ref(null);
+                let dragCounter = 0; // 防止子元素干扰拖拽遮罩闪烁
+
+                const onDragEnter = (e) => { dragCounter++; isDragging.value = true; };
+                const onDragLeave = (e) => { dragCounter--; if (dragCounter === 0) isDragging.value = false; };
+                const onDrop = (e) => {
+                    dragCounter = 0;
+                    isDragging.value = false;
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        selectedFile.value = e.dataTransfer.files[0];
+                    }
+                };
+                const onFileChange = (e) => {
+                    if (e.target.files && e.target.files.length > 0) selectedFile.value = e.target.files[0];
+                    e.target.value = null; // 重置 input 允许重复选同名文件
+                };
 
                 // 【核心变动】利用 Vue 的 watch，深度监听数据变动，自动静默同步到浏览器存储中
                 watch(sessionList, (val) => localStorage.setItem('agent_sessions', JSON.stringify(val)), { deep: true });
@@ -388,11 +447,39 @@
                 };
 
                 const sendMessage = async () => {
-                    if (!inputText.value.trim() || isGlobalRunning.value) return;
+                    if ((!inputText.value.trim() && !selectedFile.value) || isGlobalRunning.value) return;
                     
-                    const prompt = inputText.value;
+                    const prompt = inputText.value || "请处理我上传的文件。";
                     inputText.value = '';
                     isGlobalRunning.value = true;
+
+                    // 【新增逻辑】如果带了附件，先上传文件获取路径
+                    let uploadedPath = null;
+                    let isMediaFile = false; // 新增：判断是否为多媒体文件
+                    let attachedFileInfo = null; // 【新增】用于在 UI 上渲染卡片的数据
+                    if (selectedFile.value) {
+                        isMediaFile = selectedFile.value.type.startsWith('image/') || 
+                                      selectedFile.value.type.startsWith('audio/') || 
+                                      selectedFile.value.type.startsWith('video/');
+                        
+                        // 【新增】保存用于展示的文件名和类型标记
+                        attachedFileInfo = {
+                            name: selectedFile.value.name,
+                            isMedia: isMediaFile
+                        };
+                                      
+                        const formData = new FormData();
+                        formData.append('file', selectedFile.value);
+                        try {
+                            const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                            const data = await res.json();
+                            uploadedPath = data.file_path;
+                        } catch (e) {
+                            console.error('文件上传失败', e);
+                            isGlobalRunning.value = false;
+                            return;
+                        }
+                    }
 
                     const dialogues = sessionDialogues.value[currentSessionId.value];
                     
@@ -407,12 +494,24 @@
 
                     // 【核心修改】：根据模式向大模型静默注入行为约束
                     let payloadPrompt = prompt;
+                    // 【核心升级】针对不同类型的文件，给 AI 下达不同的系统级暗示
+                    if (uploadedPath) {
+                        if (isMediaFile) {
+                            payloadPrompt = `(系统提示：用户上传了多媒体素材，物理路径为 \`${uploadedPath}\`。如果你正在生成 HTML 网页或游戏，请直接在 <img> 标签或 Canvas 绘制时，使用 URL \`/preview/${uploadedPath}\` 来加载该素材。)\n\n` + payloadPrompt;
+                        } else {
+                            payloadPrompt = `(系统提示：用户向工作区上传了一个文档/代码文件，存放路径为 \`${uploadedPath}\`。如果任务涉及该文件，请优先使用工具读取它。)\n\n` + payloadPrompt;
+                        }
+                    }
                     if (currentExecutionMode.value === 'plan') {
                         payloadPrompt = prompt + "\n\n(系统强制指令：当前处于【引导计划模式】。请先输出一份带编号的详细代码实现拆解计划，并询问我是否同意。在我明确回复同意之前，你只允许进行环境读取，严禁调用 write_file 或 edit_file 写入任何代码！)";
                     }
 
+                    // 发送完成后清空选中的文件
+                    selectedFile.value = null;
+
                     const newDialogueRaw = {
                         userPrompt: prompt, // 界面上依然只显示用户原本清爽的输入
+                        attachedFile: attachedFileInfo,
                         isRunning: true,
                         isExpanded: true,
                         traces: [],
@@ -508,7 +607,13 @@
                     sendApproval,
                     sendMessage,
                     renderMarkdown,
-                    getPreviewUrl
+                    getPreviewUrl,
+                    onDragEnter,
+                    onDragLeave,
+                    onDrop,
+                    onFileChange,
+                    selectedFile,
+                    isDragging
                 };
             }
         }).mount('#app');

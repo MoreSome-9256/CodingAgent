@@ -1,5 +1,7 @@
 import os
 import subprocess
+import zipfile
+import xml.etree.ElementTree as ET
 
 MAX_OUTPUT_LENGTH = 3000  # 单次工具输出最大字符数，防止撑爆上下文 Token
 
@@ -55,17 +57,48 @@ def list_dir(path: str = ".", **kwargs) -> str:
         return f"Error listing directory: {str(e)}"
 
 def read_file(path: str, **kwargs) -> str:
-    """读取文件内容并附带行号"""
+    """读取文件内容，原生支持纯文本与 Word (.docx) 文档的解析"""
     try:
-        # 安全防护：禁止模型直接读取 .env 避免泄露 Key
+        # 安全防护：禁止直接读取 .env
         if os.path.basename(path) == ".env":
             return "Error: Access to .env file is restricted for security."
         
         if not os.path.exists(path):
             return f"Error: File '{path}' does not exist."
+            
+        ext = os.path.splitext(path)[1].lower()
+        
+        # 针对 Word (.docx) 文档的无依赖解析逻辑
+        if ext == ".docx":
+            try:
+                with zipfile.ZipFile(path) as docx:
+                    xml_content = docx.read('word/document.xml')
+                tree = ET.fromstring(xml_content)
+                
+                # Word 命名空间
+                ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                paragraphs = []
+                
+                # 遍历所有段落标签 <w:p>，提取内部的文本标签 <w:t>
+                for p in tree.findall('.//w:p', namespaces=ns):
+                    texts = [t.text for t in p.findall('.//w:t', namespaces=ns) if t.text]
+                    if texts:
+                        paragraphs.append("".join(texts))
+                        
+                content = "\n".join(paragraphs)
+                lines = content.split('\n')
+                return "".join([f"{i+1:4d} | {line}\n" for i, line in enumerate(lines)])
+                
+            except zipfile.BadZipFile:
+                return f"Error: '{path}' is not a valid or readable .docx file. Note: Old .doc format is not supported."
+
+        # 默认按照纯文本处理 (txt, py, md, html 等)
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()
         return "".join([f"{i+1:4d} | {line}" for i, line in enumerate(lines)])
+        
+    except UnicodeDecodeError:
+        return f"Error: '{path}' appears to be a binary file or uses an unsupported encoding. Try a .txt or .docx file."
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
@@ -134,7 +167,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read file content with line numbers.",
+            "description": "Read file content with line numbers. Supports plain text files (.txt, .py, .md) and Word documents (.docx).",
             "parameters": {
                 "type": "object",
                 "properties": {
