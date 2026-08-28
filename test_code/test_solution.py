@@ -1,31 +1,42 @@
-import unittest
-from solution import canJump
+import pytest
+
+from solution import threeSum
 
 
-class TestCanJump(unittest.TestCase):
-    def test_example1(self):
-        self.assertTrue(canJump([2, 3, 1, 1, 4]))
+def test_example1():
+    nums = [-1, 0, 1, 2, -1, -4]
+    result = threeSum(nums)
+    # 集合比较，忽略顺序
+    expected = {(-1, -1, 2), (-1, 0, 1)}
+    assert {tuple(triplet) for triplet in result} == expected
 
-    def test_example2(self):
-        self.assertFalse(canJump([3, 2, 1, 0, 4]))
 
-    def test_single_element(self):
-        # 只有一个元素，已经在最后一个下标，直接可达
-        self.assertTrue(canJump([0]))
+def test_example2():
+    nums = [0, 1, 1]
+    assert threeSum(nums) == []
 
-    def test_zero_at_start(self):
-        # 第一个下标最大跳跃长度为 0，无法移动
-        self.assertFalse(canJump([0, 2, 3]))
 
-    def test_large_jump(self):
-        self.assertTrue(canJump([2, 0, 0]))
+def test_example3():
+    nums = [0, 0, 0]
+    result = threeSum(nums)
+    assert {tuple(t) for t in result} == {(0, 0, 0)}
 
-    def test_all_zeros_except_last(self):
-        self.assertTrue(canJump([1, 1, 1, 0]))
 
-    def test_need_greedy_choice(self):
-        self.assertTrue(canJump([2, 5, 0, 0]))
+def test_no_repeated_triplets():
+    # 多组重复元素的情况
+    nums = [-2, 0, 0, 2, 2]
+    result = threeSum(nums)
+    assert {tuple(t) for t in result} == {(-2, 0, 2)}
+
+
+def test_empty_and_short():
+    assert threeSum([]) == []
+    assert threeSum([0, 1]) == []
+
+
+def test_all_negative():
+    assert threeSum([-3, -2, -1]) == []
 
 
 if __name__ == "__main__":
-    unittest.main()
+    pytest.main([__file__, "-v"])

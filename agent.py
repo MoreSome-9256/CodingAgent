@@ -35,7 +35,7 @@ class CodingAgentSession:
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.model_name = model_name or os.getenv("MODEL_NAME", "deepseek-chat")
         self.max_steps = max_steps
-        self.permission_mode = permission_mode  # "full" 或 "ask"
+        self.permission_mode = permission_mode
         
         self.client = AsyncOpenAI(
             api_key=self.api_key,
@@ -43,14 +43,14 @@ class CodingAgentSession:
         )
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         
-        # 用于等待用户批准的事件机制
-        self.pending_approval_event = asyncio.Event()
-        self.user_approval_decision: Optional[bool] = None
+        # 新增：用于精准匹配 tool_call_id 的等待机制
+        self.pending_approvals: Dict[str, asyncio.Future] = {}
 
-    def resolve_approval(self, approved: bool):
-        """用户在前端点击允许或拒绝时调用"""
-        self.user_approval_decision = approved
-        self.pending_approval_event.set()
+    def resolve_approval(self, tool_call_id: str, approved: bool):
+        """用户在前端点击允许或拒绝时调用，精准唤醒对应的工具调用"""
+        future = self.pending_approvals.get(tool_call_id)
+        if future and not future.done():
+            future.set_result(approved)
 
     def _compress_context(self):
         if len(self.messages) <= 20:
@@ -103,11 +103,17 @@ class CodingAgentSession:
                         "tool_call_id": tool_call.id
                     }
                     
-                    # 挂起等待用户在前端确认
-                    self.pending_approval_event.clear()
-                    await self.pending_approval_event.wait()
+                    # 使用 Future 挂起等待特定 tool_call_id 的用户确认
+                    loop = asyncio.get_running_loop()
+                    future = loop.create_future()
+                    self.pending_approvals[tool_call.id] = future
+                    
+                    is_approved = await future
+                    
+                    # 确认完毕后从字典中清理
+                    self.pending_approvals.pop(tool_call.id, None)
 
-                    if not self.user_approval_decision:
+                    if not is_approved:
                         # 用户拒绝
                         output = f"Permission Denied: User rejected the execution of {func_name}."
                         yield {

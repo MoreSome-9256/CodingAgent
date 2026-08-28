@@ -21,6 +21,7 @@ class CreateSessionRequest(BaseModel):
 
 class ApprovalRequest(BaseModel):
     session_id: str
+    tool_call_id: str  # 新增此字段
     approved: bool
 
 @app.post("/api/sessions")
@@ -46,7 +47,9 @@ def approve_action(req: ApprovalRequest):
     session = sessions.get(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    session.resolve_approval(req.approved)
+    
+    # 修改：将 tool_call_id 一并传入
+    session.resolve_approval(req.tool_call_id, req.approved)
     return {"status": "ok"}
 
 @app.get("/api/chat/stream")
@@ -74,4 +77,4 @@ def index():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=8000)

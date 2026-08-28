@@ -1,27 +1,36 @@
 from typing import List
 
 
-def canJump(nums: List[int]) -> bool:
-    """
-    判断是否能够到达最后一个下标。
-
-    思路：贪心算法，维护当前能够到达的最远位置。
-    如果当前位置超过了最远可达位置，则无法继续前进，返回 False。
-    否则更新最远可达位置，若能覆盖到最后一个下标，返回 True。
-    """
-    max_reach = 0
+def threeSum(nums: List[int]) -> List[List[int]]:
+    """返回所有和为 0 且不重复的三元组。"""
+    res = []
+    nums.sort()
     n = len(nums)
 
     for i in range(n):
-        if i > max_reach:
-            return False
-        max_reach = max(max_reach, i + nums[i])
-        if max_reach >= n - 1:
-            return True
+        # 跳过重复的起始数字
+        if i > 0 and nums[i] == nums[i - 1]:
+            continue
+        # 剪枝：最小的数已经大于 0，则后续不可能凑出 0
+        if nums[i] > 0:
+            break
 
-    return True
+        left, right = i + 1, n - 1
+        target = -nums[i]
+        while left < right:
+            s = nums[left] + nums[right]
+            if s == target:
+                res.append([nums[i], nums[left], nums[right]])
+                left += 1
+                right -= 1
+                # 跳过重复元素
+                while left < right and nums[left] == nums[left - 1]:
+                    left += 1
+                while left < right and nums[right] == nums[right + 1]:
+                    right -= 1
+            elif s < target:
+                left += 1
+            else:
+                right -= 1
 
-
-if __name__ == "__main__":
-    print(canJump([2, 3, 1, 1, 4]))  # True
-    print(canJump([3, 2, 1, 0, 4]))  # False
+    return res

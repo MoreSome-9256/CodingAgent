@@ -313,6 +313,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             session_id: currentSessionId.value,
+                            tool_call_id: appr.tool_call_id,  // 携带对应的工具 ID 传给后端
                             approved: approved
                         })
                     });
