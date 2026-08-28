@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from agent import CodingAgentSession
 import database
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 
 load_dotenv()
 
@@ -94,6 +95,22 @@ async def chat_stream(session_id: str, prompt: str):
         "X-Accel-Buffering": "no"
     }
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
+
+# 【新增】供前端 iframe 直接运行本地生成的 HTML/Web 项目
+@app.get("/preview/{file_path:path}")
+def preview_file(file_path: str):
+    import os
+    # 拼接本地真实路径
+    target_path = os.path.abspath(file_path)
+    if not os.path.exists(target_path):
+        # 兼容只传文件名的情况，自动去 test_code/ 下找
+        fallback_path = os.path.abspath(os.path.join("test_code", file_path))
+        if os.path.exists(fallback_path):
+            target_path = fallback_path
+        else:
+            raise HTTPException(status_code=404, detail="Preview file not found")
+    
+    return FileResponse(target_path)
 
 @app.get("/", response_class=HTMLResponse)
 def index():

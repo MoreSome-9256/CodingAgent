@@ -166,8 +166,27 @@
                     </div>
 
                     <!-- 3. 最终总结正文 -->
-                    <div v-if="dialogue.finalContent" class="bg-gray-900/90 border border-gray-800 p-5 rounded-xl text-sm text-gray-200 leading-relaxed markdown-body"
-                         v-html="renderMarkdown(dialogue.finalContent)">
+                    <div v-if="dialogue.finalContent" class="space-y-4">
+                        <!-- 检测并提供一键运行/试玩 Web 应用预览框 -->
+                        <div v-if="getPreviewUrl(dialogue)" class="bg-gray-900 border border-emerald-500/40 rounded-xl overflow-hidden shadow-2xl">
+                            <div class="bg-gray-850 px-4 py-2.5 border-b border-gray-800 flex justify-between items-center bg-gray-900">
+                                <div class="flex items-center space-x-2 text-xs text-emerald-400 font-medium">
+                                    <i class="fa-solid fa-play text-emerald-400"></i>
+                                    <span>实时运行预览：<code class="font-mono text-gray-200">{{ getPreviewUrl(dialogue) }}</code></span>
+                                </div>
+                                <a :href="'/preview/' + getPreviewUrl(dialogue)" target="_blank" class="text-xs text-gray-400 hover:text-emerald-400 flex items-center transition">
+                                    <i class="fa-solid fa-arrow-up-right-from-square mr-1"></i> 新标签页独立全屏打开
+                                </a>
+                            </div>
+                            <div class="h-[480px] w-full bg-white">
+                                <iframe :src="'/preview/' + getPreviewUrl(dialogue)" class="w-full h-full border-0"></iframe>
+                            </div>
+                        </div>
+
+                        <!-- 总结与代码报告正文 -->
+                        <div class="bg-gray-900/90 border border-gray-800 p-5 rounded-xl text-sm text-gray-200 leading-relaxed markdown-body"
+                             v-html="renderMarkdown(dialogue.finalContent)">
+                        </div>
                     </div>
                 </div>
             </div>
@@ -319,6 +338,27 @@
                     });
                 };
 
+                // 辅助函数：从当前对话的操作轨迹或生成内容中解析出生成的 HTML 路径
+                const getPreviewUrl = (dialogue) => {
+                    // 1. 优先从工具调用痕迹里找写入的 .html 文件
+                    if (dialogue.traces) {
+                        for (let t of dialogue.traces) {
+                            if (t.type === 'tool' && t.args && t.args.path && t.args.path.endsWith('.html')) {
+                                return t.args.path;
+                            }
+                        }
+                    }
+                    // 2. 从审批卡片中找
+                    if (dialogue.approvals) {
+                        for (let a of dialogue.approvals) {
+                            if (a.args && a.args.path && a.args.path.endsWith('.html')) {
+                                return a.args.path;
+                            }
+                        }
+                    }
+                    return null;
+                };
+
                 const sendMessage = async () => {
                     if (!inputText.value.trim() || isGlobalRunning.value) return;
                     
@@ -432,7 +472,8 @@
                     saveConfigAndRecreate,
                     sendApproval,
                     sendMessage,
-                    renderMarkdown
+                    renderMarkdown,
+                    getPreviewUrl
                 };
             }
         }).mount('#app');

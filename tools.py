@@ -3,7 +3,7 @@ import subprocess
 
 MAX_OUTPUT_LENGTH = 3000  # 单次工具输出最大字符数，防止撑爆上下文 Token
 
-def run_command(command: str) -> str:
+def run_command(command: str, **kwargs) -> str:
     """在本地系统执行终端命令，包含超时控制与长输出自动截断"""
     try:
         result = subprocess.run(
@@ -35,7 +35,7 @@ def run_command(command: str) -> str:
     except Exception as e:
         return f"Error executing command: {str(e)}"
 
-def list_dir(path: str = ".") -> str:
+def list_dir(path: str = ".", **kwargs) -> str:
     """列出指定目录下的文件和文件夹结构，帮助定位项目文件"""
     try:
         if not os.path.exists(path):
@@ -54,7 +54,7 @@ def list_dir(path: str = ".") -> str:
     except Exception as e:
         return f"Error listing directory: {str(e)}"
 
-def read_file(path: str) -> str:
+def read_file(path: str, **kwargs) -> str:
     """读取文件内容并附带行号"""
     try:
         # 安全防护：禁止模型直接读取 .env 避免泄露 Key
@@ -69,7 +69,7 @@ def read_file(path: str) -> str:
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
-def write_file(path: str, content: str) -> str:
+def write_file(path: str, content: str, **kwargs) -> str:
     """新建或全量覆写文件"""
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -79,7 +79,7 @@ def write_file(path: str, content: str) -> str:
     except Exception as e:
         return f"Error writing file: {str(e)}"
 
-def edit_file(path: str, old_snippet: str, new_snippet: str) -> str:
+def edit_file(path: str, old_snippet: str, new_snippet: str, **kwargs) -> str:
     """通过精准替换旧代码片段来修改文件，无需全量重写"""
     try:
         if not os.path.exists(path):
