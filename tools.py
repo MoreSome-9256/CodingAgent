@@ -6,24 +6,36 @@ import xml.etree.ElementTree as ET
 MAX_OUTPUT_LENGTH = 3000  # 单次工具输出最大字符数，防止撑爆上下文 Token
 
 def run_command(command: str, **kwargs) -> str:
-    """在本地系统执行终端命令，包含超时控制与长输出自动截断"""
+    """在本地系统执行终端命令，包含超时控制、UTF-8强制容错与长输出截断"""
     try:
         result = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             text=True,
-            encoding="utf-8",    # 强制以 UTF-8 解码命令行输出
-            errors="replace",    # 核心防御：遇到无法解码的乱码字符直接替换为问号，绝不抛出异常让程序崩溃
+            encoding="utf-8",
+            errors="replace",
             timeout=30
         )
-        output = f"Exit Code: {result.returncode}\n"
+        
+        # 退出码非 0 时的自愈引导
+        if result.returncode != 0:
+            err_output = result.stderr if result.stderr else result.stdout
+            err_output = err_output.strip() if err_output else "Process exited with code != 0 without explicit error."
+            return (
+                f"[COMMAND FAILED - Exit Code: {result.returncode}]\n"
+                f"ERROR OUTPUT:\n{err_output}\n\n"
+                f"💡 [Self-Healing Suggestion]: Inspect the error trace above. If it's a syntax/import error, "
+                f"use 'read_file' to locate the issue, modify via 'edit_file' or 'write_file', and rerun the command to verify."
+            )
+
+        output = ""
         if result.stdout:
             output += f"STDOUT:\n{result.stdout}\n"
         if result.stderr:
-            output += f"STDERR:\n{result.stderr}\n"
+            output += f"STDERR (Non-fatal warnings):\n{result.stderr}\n"
         
-        output = output.strip() if output.strip() else "Command executed with no output."
+        output = output.strip() if output.strip() else "Command executed successfully with no output."
         
         # 保护机制：如果输出过长，保留首尾关键信息，中间截断
         if len(output) > MAX_OUTPUT_LENGTH:
@@ -33,18 +45,24 @@ def run_command(command: str, **kwargs) -> str:
             
         return output
     except subprocess.TimeoutExpired:
-        return "Error: Command timed out after 30 seconds."
+        return (
+            "Error: Command timed out after 30 seconds.\n"
+            "💡 [Self-Healing Suggestion]: The command likely hung waiting for interactive input (e.g. input(), scanf()) "
+            "or an infinite loop. Avoid interactive commands or pass arguments directly (e.g., echo '...' | python)."
+        )
     except Exception as e:
-        return f"Error executing command: {str(e)}"
+        return f"Error executing command: {str(e)}\n💡 [Self-Healing Suggestion]: Check command syntax and binary path."
 
 def list_dir(path: str = ".", **kwargs) -> str:
     """列出指定目录下的文件和文件夹结构，帮助定位项目文件"""
     try:
         if not os.path.exists(path):
-            return f"Error: Path '{path}' does not exist."
+            return (
+                f"Error: Path '{path}' does not exist.\n"
+                f"💡 [Self-Healing Suggestion]: Call 'list_dir(path=\".\")' to check available project folders from root."
+            )
         items = []
         for root, dirs, files in os.walk(path):
-            # 过滤掉不需要让大模型看的隐藏目录和虚拟环境
             dirs[:] = [d for d in dirs if d not in [".venv", "__pycache__", ".git", ".pytest_cache"]]
             level = root.replace(path, "").count(os.sep)
             indent = " " * 4 * level
@@ -59,48 +77,51 @@ def list_dir(path: str = ".", **kwargs) -> str:
 def read_file(path: str, **kwargs) -> str:
     """读取文件内容，原生支持纯文本与 Word (.docx) 文档的解析"""
     try:
-        # 安全防护：禁止直接读取 .env
         if os.path.basename(path) == ".env":
-            return "Error: Access to .env file is restricted for security."
+            return "Error: Access to .env file is restricted for security. Please do not attempt to inspect credentials."
         
         if not os.path.exists(path):
-            return f"Error: File '{path}' does not exist."
+            return (
+                f"Error: File '{path}' does not exist.\n"
+                f"💡 [Self-Healing Suggestion]: Use 'list_dir' to verify the exact file path and directory structure."
+            )
             
         ext = os.path.splitext(path)[1].lower()
         
-        # 针对 Word (.docx) 文档的无依赖解析逻辑
+        # 针对 Word (.docx) 文档解析
         if ext == ".docx":
             try:
                 with zipfile.ZipFile(path) as docx:
                     xml_content = docx.read('word/document.xml')
                 tree = ET.fromstring(xml_content)
-                
-                # Word 命名空间
                 ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
                 paragraphs = []
-                
-                # 遍历所有段落标签 <w:p>，提取内部的文本标签 <w:t>
                 for p in tree.findall('.//w:p', namespaces=ns):
                     texts = [t.text for t in p.findall('.//w:t', namespaces=ns) if t.text]
                     if texts:
                         paragraphs.append("".join(texts))
-                        
                 content = "\n".join(paragraphs)
                 lines = content.split('\n')
                 return "".join([f"{i+1:4d} | {line}\n" for i, line in enumerate(lines)])
-                
             except zipfile.BadZipFile:
-                return f"Error: '{path}' is not a valid or readable .docx file. Note: Old .doc format is not supported."
+                return (
+                    f"Error: '{path}' is not a valid or readable .docx file.\n"
+                    f"💡 [Self-Healing Suggestion]: If this is an older binary Word file (.doc), it is not supported. "
+                    f"Ask the user or convert it to a plain text format."
+                )
 
-        # 默认按照纯文本处理 (txt, py, md, html 等)
+        # 针对纯文本读取
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()
         return "".join([f"{i+1:4d} | {line}" for i, line in enumerate(lines)])
         
     except UnicodeDecodeError:
-        return f"Error: '{path}' appears to be a binary file or uses an unsupported encoding. Try a .txt or .docx file."
+        return (
+            f"Error: '{path}' appears to be a binary file or uses an unsupported non-UTF-8 encoding.\n"
+            f"💡 [Self-Healing Suggestion]: Inspect the file type. Only source code and text documents should be read."
+        )
     except Exception as e:
-        return f"Error reading file: {str(e)}"
+        return f"Error reading file '{path}': {str(e)}"
 
 def write_file(path: str, content: str, **kwargs) -> str:
     """新建或全量覆写文件"""
@@ -109,32 +130,53 @@ def write_file(path: str, content: str, **kwargs) -> str:
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"File '{path}' written successfully."
+    except PermissionError:
+        return (
+            f"Error: Permission denied when writing to '{path}'.\n"
+            f"💡 [Self-Healing Suggestion]: Ensure you are saving within user-accessible folders like 'test_code/'."
+        )
     except Exception as e:
-        return f"Error writing file: {str(e)}"
+        return f"Error writing file '{path}': {str(e)}"
 
 def edit_file(path: str, old_snippet: str, new_snippet: str, **kwargs) -> str:
     """通过精准替换旧代码片段来修改文件，无需全量重写"""
     try:
         if not os.path.exists(path):
-            return f"Error: File '{path}' does not exist."
+            return (
+                f"Error: File '{path}' does not exist.\n"
+                f"💡 [Self-Healing Suggestion]: Use 'write_file' if you want to create a new file, or check path with 'list_dir'."
+            )
+            
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
 
         if old_snippet not in content:
-            return f"Error: Target snippet not found in '{path}'. Please read the file first to ensure exact match."
+            return (
+                f"Error: Target 'old_snippet' not found in '{path}'.\n"
+                f"💡 [Self-Healing Suggestion]: Call 'read_file' with exact line numbers on '{path}' first! "
+                f"Make sure indentation, blank lines, and whitespace in 'old_snippet' match the existing file verbatim."
+            )
 
         count = content.count(old_snippet)
         if count > 1:
-            return f"Error: Target snippet appears {count} times in '{path}'. Provide a more specific/longer code block to ensure unique replacement."
+            return (
+                f"Error: Target 'old_snippet' appears {count} times in '{path}'. Ambiguous replacement.\n"
+                f"💡 [Self-Healing Suggestion]: Expand your 'old_snippet' to include more preceding or following context lines "
+                f"so that it matches exactly ONE unique occurrence in the file."
+            )
 
         new_content = content.replace(old_snippet, new_snippet, 1)
         with open(path, "w", encoding="utf-8") as f:
             f.write(new_content)
         return f"File '{path}' edited successfully."
     except Exception as e:
-        return f"Error editing file: {str(e)}"
+        return f"Error editing file '{path}': {str(e)}"
 
-# 工具元数据定义
+def update_todo(tasks: list, **kwargs) -> str:
+    """更新任务看板（工具本身只返回成功确认，实际渲染由 SSE 拦截处理）"""
+    return "Task list updated successfully. User can now see the progress."
+
+# 元数据保持不变
 TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -207,6 +249,31 @@ TOOLS_SCHEMA = [
                 "required": ["path", "old_snippet", "new_snippet"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_todo",
+            "description": "Create or update a global Task/Todo checklist. Call this BEFORE starting complex tasks to plan, and call it again to update status as you finish steps.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "e.g., '1', '2'"},
+                                "title": {"type": "string", "description": "Task description"},
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+                            },
+                            "required": ["id", "title", "status"]
+                        }
+                    }
+                },
+                "required": ["tasks"]
+            }
+        }
     }
 ]
 
@@ -215,5 +282,6 @@ AVAILABLE_TOOLS = {
     "list_dir": list_dir,
     "read_file": read_file,
     "write_file": write_file,
-    "edit_file": edit_file
+    "edit_file": edit_file,
+    "update_todo": update_todo
 }

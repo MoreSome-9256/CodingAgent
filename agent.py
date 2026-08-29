@@ -7,24 +7,22 @@ from tools import TOOLS_SCHEMA, AVAILABLE_TOOLS
 
 SYSTEM_PROMPT = """You are an autonomous software engineering assistant.
 Your goal is to solve the user's programming request completely.
-You have local tools to read/write/edit files, list directory contents, and execute shell commands.
+You have local tools to read/write/edit files, list directory contents, execute shell commands, and manage a Todo list.
 
 File Storage & Workspace Rules:
 - Unless the user explicitly specifies a different directory or file path, ALWAYS place newly created code and test files under the 'test_code/' directory (e.g., 'test_code/solution.py', 'test_code/snake.html').
-- If the user asks for interactive apps, games, UI tools, or visual programs (e.g., '贪吃蛇', '2048', '画板', '待办清单', '计算器'), prefer creating a standalone, self-contained HTML file (including CSS & JavaScript) under 'test_code/' (e.g. 'test_code/snake.html') so it can be previewed and played directly in the browser.
-- If the user explicitly provides a custom path (e.g., 'src/utils.py' or 'output/app.py'), strictly follow the user's specified path.
+- If the user asks for interactive apps, games, UI tools, or visual programs, prefer creating a standalone, self-contained HTML file (including CSS & JavaScript) under 'test_code/' so it can be previewed directly.
 
 Workflow:
-1. Explore existing files or run tests to understand current state if needed.
-2. Edit or create files in the appropriate directory.
-3. Always verify your changes by executing commands if applicable (e.g. run pytest or scripts).
-4. When everything is verified and working, provide a comprehensive final response to the user containing:
-   - Summary of actions taken and files created/modified (with exact paths).
-   - The actual code blocks written/edited so the user can review directly.
-   - Verification and test results.
+1. [MANDATORY INITIALIZATION] ALWAYS call the 'update_todo' tool FIRST to break down complex tasks into a structured checklist.
+2. Explore existing files or run tests to understand the current state if needed.
+3. Edit or create files in the appropriate directory.
+4. [MANDATORY TRACKING] Call 'update_todo' again to mark tasks as 'in_progress' or 'completed' as you work.
+5. Always verify your changes by executing commands if applicable.
+6. [MANDATORY TERMINATION] When all tasks are completed and verified, you MUST output a comprehensive final summary and STOP calling any more tools. Do not endlessly inspect files.
 
 Language Requirement:
-- Always reply and summarize in Chinese (Simplified Chinese) by default, unless the user explicitly requests another language. Code comments, variable names, and technical identifiers should follow standard engineering conventions.
+- Always reply and summarize in Chinese (Simplified Chinese) by default.
 """
 
 # 定义需要用户显式批准的敏感工具（写操作）
@@ -55,14 +53,42 @@ class CodingAgentSession:
             future.set_result(approved)
 
     def _compress_context(self):
-        if len(self.messages) <= 20:
+        """
+        四层廉价优先上下文压缩管线 (滑动窗口 + 0 Token 损耗占位符)
+        保护头部 (System Prompt) 和尾部 (最新 6 条记录)，对中间过期的冗长记录进行无损状态裁切。
+        """
+        # 只有当历史消息列表超过一定长度时才触发，避免过早压缩
+        if len(self.messages) <= 12:
             return
-        for i in range(2, len(self.messages) - 6):
+            
+        # 尾部保护窗口：始终保留最近的 6 条消息完整无缺，保证当前步骤的推理连贯性
+        safe_tail_length = 6
+        
+        # 遍历从第 1 条（跳过索引 0 的 system prompt）到尾部保护窗口之前的所有历史消息
+        for i in range(1, len(self.messages) - safe_tail_length):
             msg = self.messages[i]
-            if isinstance(msg, dict) and msg.get("role") == "tool":
+            
+            # L2 压缩：针对历史工具调用的超长输出
+            if msg.get("role") == "tool":
                 content = msg.get("content", "")
-                if len(content) > 200:
-                    msg["content"] = content[:100] + "\n... [Earlier tool output pruned] ..."
+                if len(content) > 300:
+                    # 保留前 150 字符（通常包含状态码或首行报错），和后 50 字符（通常包含总结或异常尾部）
+                    # 中间替换为明确的占位符，告知大模型该内容它之前已经看过了
+                    head = content[:150]
+                    tail = content[-50:]
+                    msg["content"] = (
+                        f"{head}\n\n"
+                        f"... [L2 Compression: Large output truncated to save context window. "
+                        f"Content previously inspected successfully.] ...\n\n"
+                        f"{tail}"
+                    )
+            
+            # L1 压缩：针对大模型过去轮次中产生的冗长思维链/解释文本
+            elif msg.get("role") == "assistant" and msg.get("content"):
+                content = msg["content"]
+                if len(content) > 400:
+                    # 历史思考过程不再重要，保留前 100 字作为上下文锚点即可
+                    msg["content"] = content[:100] + "\n... [L1 Compression: Previous reasoning truncated] ..."
 
     async def step_stream(self, user_prompt: str) -> AsyncGenerator[Dict[str, Any], None]:
         self.messages.append({"role": "user", "content": user_prompt})
@@ -94,9 +120,30 @@ class CodingAgentSession:
 
             for tool_call in message.tool_calls:
                 func_name = tool_call.function.name
-                func_args = json.loads(tool_call.function.arguments)
+                
+                # 1. 防御参数 JSON 反序列化崩溃
+                try:
+                    func_args = json.loads(tool_call.function.arguments)
+                except Exception as json_err:
+                    output = (
+                        f"Error: Failed to parse tool arguments as valid JSON: {str(json_err)}.\n"
+                        f"Raw Arguments: '{tool_call.function.arguments}'\n"
+                        f"💡 [Self-Healing Suggestion]: Retry the tool call with strictly valid JSON format."
+                    )
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": output
+                    })
+                    yield {
+                        "type": "tool_output",
+                        "name": func_name,
+                        "output": output,
+                        "tool_call_id": tool_call.id
+                    }
+                    continue
 
-                # 权限校验：如果处于 "ask" 模式且调用了敏感写工具
+                # 2. 权限校验（ask 模式且敏感操作）
                 if self.permission_mode == "ask" and func_name in SENSITIVE_TOOLS:
                     yield {
                         "type": "approval_required",
@@ -105,19 +152,19 @@ class CodingAgentSession:
                         "tool_call_id": tool_call.id
                     }
                     
-                    # 使用 Future 挂起等待特定 tool_call_id 的用户确认
                     loop = asyncio.get_running_loop()
                     future = loop.create_future()
                     self.pending_approvals[tool_call.id] = future
                     
                     is_approved = await future
-                    
-                    # 确认完毕后从字典中清理
                     self.pending_approvals.pop(tool_call.id, None)
 
                     if not is_approved:
-                        # 用户拒绝
-                        output = f"Permission Denied: User rejected the execution of {func_name}."
+                        output = (
+                            f"Permission Denied: The user explicitly rejected the execution of {func_name}.\n"
+                            f"💡 [Self-Healing Suggestion]: Explain to the user why this action was needed, "
+                            f"or propose an alternative approach without modifying this specific file."
+                        )
                         yield {
                             "type": "tool_output",
                             "name": func_name,
@@ -131,7 +178,7 @@ class CodingAgentSession:
                         })
                         continue
 
-                # 正常执行工具
+                # 3. 正常执行工具并启动 Never-Throw 外层保护网
                 yield {
                     "type": "tool_call",
                     "name": func_name,
@@ -139,17 +186,33 @@ class CodingAgentSession:
                     "tool_call_id": tool_call.id
                 }
 
+                # 【新增拦截】：如果是待办更新工具，直接向前端下发结构化数据
+                if func_name == "update_todo":
+                    yield {
+                        "type": "todo_update",
+                        "tasks": func_args.get("tasks", [])
+                    }
+
                 tool_func = AVAILABLE_TOOLS.get(func_name)
                 if tool_func:
-                    # 【核心修复】：增加 try...except 拦截参数解包错误
                     try:
                         output = tool_func(**func_args)
                     except TypeError as e:
-                        output = f"Tool Argument Error: {str(e)}. Please check the tool's required parameters in the schema and try again."
+                        output = (
+                            f"Tool Argument Mismatch: {str(e)}.\n"
+                            f"💡 [Self-Healing Suggestion]: Inspect the parameter schema for '{func_name}' and provide the correct argument names."
+                        )
                     except Exception as e:
-                        output = f"Tool Execution Error: {str(e)}"
+                        # 极端防御：即使底层有任何未处理的运行时错误，绝不上抛打崩循环
+                        output = (
+                            f"Tool Internal Unexpected Error: {str(e)}.\n"
+                            f"💡 [Self-Healing Suggestion]: Do not repeat the exact same call. Try an alternative strategy."
+                        )
                 else:
-                    output = f"Error: Tool {func_name} not found."
+                    output = (
+                        f"Error: Tool '{func_name}' does not exist.\n"
+                        f"💡 [Self-Healing Suggestion]: Choose from available tools: {list(AVAILABLE_TOOLS.keys())}."
+                    )
 
                 yield {
                     "type": "tool_output",

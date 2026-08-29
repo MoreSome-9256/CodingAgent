@@ -93,11 +93,38 @@
         </div>
 
         <!-- 主对话区域 -->
-        <div class="flex-1 flex flex-col justify-between bg-gray-950">
+        <div class="flex-1 flex flex-col justify-between bg-gray-950 relative">
             <div class="flex-1 overflow-y-auto p-6 space-y-6" id="chat-box">
                 <div v-if="currentDialogues.length === 0" class="text-center text-gray-600 mt-32">
                     <i class="fa-solid fa-code text-5xl mb-4 text-gray-700"></i>
                     <p class="text-lg">输入编程任务，Agent 将自主探索代码库、读写文件并运行测试闭环。</p>
+                </div>
+
+                <!-- 【新版】右上角悬浮可折叠 Todo 看板 -->
+                <div v-if="currentTodos.length > 0" 
+                    class="absolute top-6 right-8 w-80 z-50 bg-gray-900/95 backdrop-blur-sm border border-emerald-500/40 rounded-xl shadow-2xl flex-shrink-0 transition-all duration-300">
+                    <!-- 头部：点击折叠/展开 -->
+                    <div class="flex justify-between items-center p-3 border-b border-gray-800 cursor-pointer hover:bg-gray-800/50 transition-colors rounded-t-xl" 
+                        @click="isTodoExpanded = !isTodoExpanded">
+                        <h3 class="text-emerald-400 font-bold text-sm flex items-center">
+                            <i class="fa-solid fa-list-check mr-2"></i>任务计划 
+                            <span class="text-xs text-gray-500 ml-2 font-normal">({{ currentTodos.filter(t => t.status === 'completed').length }}/{{ currentTodos.length }})</span>
+                        </h3>
+                        <i class="fa-solid text-gray-400 text-sm transition-transform duration-300" :class="isTodoExpanded ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                    </div>
+                    <!-- 列表体 -->
+                    <div v-show="isTodoExpanded" class="p-3 space-y-2 max-h-[60vh] overflow-y-auto">
+                        <div v-for="task in currentTodos" :key="task.id" class="flex items-start text-sm p-2 rounded bg-gray-950 border border-gray-800/80">
+                            <div class="w-6 flex-shrink-0 flex justify-center mt-0.5">
+                                <i v-if="task.status === 'completed'" class="fa-solid fa-circle-check text-emerald-500"></i>
+                                <i v-else-if="task.status === 'in_progress'" class="fa-solid fa-spinner fa-spin text-amber-500"></i>
+                                <i v-else class="fa-regular fa-circle text-gray-600"></i>
+                            </div>
+                            <span :class="{'text-gray-500 line-through': task.status === 'completed', 'text-amber-400 font-medium': task.status === 'in_progress', 'text-gray-200': task.status === 'pending'}" class="ml-2 text-[13px] leading-snug">
+                                {{ task.title }}
+                            </span>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- 每一轮对话 -->
@@ -292,6 +319,12 @@
                 const sessionList = ref(JSON.parse(localStorage.getItem('agent_sessions') || '[]'));
                 const currentSessionId = ref(localStorage.getItem('agent_current_session') || '');
                 const sessionDialogues = ref(JSON.parse(localStorage.getItem('agent_dialogues') || '{}'));
+
+                const sessionTodoList = ref(JSON.parse(localStorage.getItem('agent_todos') || '{}'));
+                watch(sessionTodoList, (val) => localStorage.setItem('agent_todos', JSON.stringify(val)), { deep: true });
+                const currentTodos = computed(() => sessionTodoList.value[currentSessionId.value] || []);
+                const isTodoExpanded = ref(true);
+
                 const currentPermission = ref(localStorage.getItem('agent_permission') || 'full');
                 // 【新增】执行模式的状态与持久化
                 const currentExecutionMode = ref(localStorage.getItem('agent_exec_mode') || 'auto');
@@ -503,7 +536,7 @@
                         }
                     }
                     if (currentExecutionMode.value === 'plan') {
-                        payloadPrompt = prompt + "\n\n(系统强制指令：当前处于【引导计划模式】。请先输出一份带编号的详细代码实现拆解计划，并询问我是否同意。在我明确回复同意之前，你只允许进行环境读取，严禁调用 write_file 或 edit_file 写入任何代码！)";
+                        payloadPrompt = prompt + "\n\n(系统强制指令：当前处于【引导计划模式】。请务必先调用 `update_todo` 工具生成一份详细的任务拆解计划，然后在文本中询问我是否同意。在我明确回复同意之前，严禁调用 write_file 或 edit_file 写入任何代码！)";
                     }
 
                     // 发送完成后清空选中的文件
@@ -555,6 +588,9 @@
                         } else if (data.type === 'tool_output') {
                             const lastTool = activeDialogue.traces.slice().reverse().find(t => t.type === 'tool' && t.tool_call_id === data.tool_call_id);
                             if (lastTool) lastTool.output = data.output;
+                        } else if (data.type === 'todo_update') {
+                            // 实时更新当前会话的任务面板数据
+                            sessionTodoList.value[currentSessionId.value] = data.tasks;
                         } else if (data.type === 'finish') {
                             activeDialogue.finalContent = data.content;
                             activeDialogue.isRunning = false;
@@ -594,6 +630,8 @@
                     sessionList,
                     currentSessionId,
                     currentDialogues,
+                    currentTodos,
+                    isTodoExpanded,
                     currentExecutionMode,
                     currentPermission,
                     inputText,
