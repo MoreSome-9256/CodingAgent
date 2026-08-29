@@ -526,7 +526,7 @@
                     }
 
                     // 【核心修改】：根据模式向大模型静默注入行为约束
-                    let payloadPrompt = prompt;
+                    /*let payloadPrompt = prompt;
                     // 【核心升级】针对不同类型的文件，给 AI 下达不同的系统级暗示
                     if (uploadedPath) {
                         if (isMediaFile) {
@@ -537,13 +537,10 @@
                     }
                     if (currentExecutionMode.value === 'plan') {
                         payloadPrompt = prompt + "\n\n(系统强制指令：当前处于【引导计划模式】。请务必先调用 `update_todo` 工具生成一份详细的任务拆解计划，然后在文本中询问我是否同意。在我明确回复同意之前，严禁调用 write_file 或 edit_file 写入任何代码！)";
-                    }
-
-                    // 发送完成后清空选中的文件
-                    selectedFile.value = null;
+                    }*/
 
                     const newDialogueRaw = {
-                        userPrompt: prompt, // 界面上依然只显示用户原本清爽的输入
+                        userPrompt: prompt,
                         attachedFile: attachedFileInfo,
                         isRunning: true,
                         isExpanded: true,
@@ -557,7 +554,25 @@
                     
                     scrollToBottom(dIdx);
 
-                    const eventSource = new EventSource(`/api/chat/stream?session_id=${currentSessionId.value}&prompt=${encodeURIComponent(payloadPrompt)}`);
+                    // 构造参数清晰的请求 URL
+                    const streamUrl = new URL('/api/chat/stream', window.location.origin);
+                    streamUrl.searchParams.set('session_id', currentSessionId.value);
+                    streamUrl.searchParams.set('prompt', prompt);
+                    streamUrl.searchParams.set('exec_mode', currentExecutionMode.value);
+                    if (uploadedPath) {
+                        streamUrl.searchParams.set('file_path', uploadedPath);
+                        streamUrl.searchParams.set('is_media', isMediaFile);
+                    }
+                    
+                    // 【新增】：把当前未被清空的看板状态序列化后传给后端
+                    if (currentTodos.value && currentTodos.value.length > 0) {
+                        streamUrl.searchParams.set('current_todos', JSON.stringify(currentTodos.value));
+                    }
+
+                    // 重置已发送的附件状态
+                    selectedFile.value = null;
+
+                    const eventSource = new EventSource(streamUrl.toString());
 
                     eventSource.onmessage = (event) => {
                         const data = JSON.parse(event.data);
@@ -595,11 +610,30 @@
                             activeDialogue.finalContent = data.content;
                             activeDialogue.isRunning = false;
                             activeDialogue.isExpanded = false;
+                            
+                            // 【新增】自动清理遗留的进行中任务状态，防止 UI 永远转圈
+                            if (sessionTodoList.value[currentSessionId.value]) {
+                                sessionTodoList.value[currentSessionId.value].forEach(t => {
+                                    if (t.status === 'in_progress') {
+                                        // 将未完成的任务重置为等待状态，或者你也可以改为 'completed'
+                                        t.status = 'pending'; 
+                                    }
+                                });
+                            }
+                            
                             eventSource.close();
                             isGlobalRunning.value = false;
                         } else if (data.type === 'error') {
                             activeDialogue.finalContent = `> ⚠️ **执行出错**: ${data.message}`;
                             activeDialogue.isRunning = false;
+                            
+                            // 【新增】出错时同样清理转圈状态
+                            if (sessionTodoList.value[currentSessionId.value]) {
+                                sessionTodoList.value[currentSessionId.value].forEach(t => {
+                                    if (t.status === 'in_progress') t.status = 'pending';
+                                });
+                            }
+                            
                             eventSource.close();
                             isGlobalRunning.value = false;
                         }

@@ -95,8 +95,7 @@ def approve_action(req: ApprovalRequest):
     return {"status": "ok"}
 
 @app.get("/api/chat/stream")
-async def chat_stream(session_id: str, prompt: str):
-    # 核心拦截逻辑：如果内存中没有，尝试从数据库唤醒
+async def chat_stream(session_id: str, prompt: str, exec_mode: str = "auto", file_path: Optional[str] = None, is_media: bool = False, current_todos: Optional[str] = None):
     if session_id not in sessions:
         db_record = database.load_session(session_id)
         if db_record:
@@ -106,19 +105,27 @@ async def chat_stream(session_id: str, prompt: str):
                 history_messages=history_messages
             )
         else:
-            # 数据库里也没有，说明是彻底丢失或非法的 ID
             async def error_generator():
                 yield f"data: {json.dumps({'type': 'error', 'message': '会话不存在或已失效，请新建会话。'}, ensure_ascii=False)}\n\n"
             return StreamingResponse(error_generator(), media_type="text/event-stream")
 
     session = sessions[session_id]
 
+    # 根据上传文件的性质构造临时提示内容
+    file_context = None
+    if file_path:
+        if is_media:
+            file_context = f"用户上传了多媒体素材，物理路径为 `{file_path}`。若生成 Web/游戏，请在 <img> 或 Canvas 中通过 URL `/preview/{file_path}` 加载。"
+        else:
+            file_context = f"用户向工作区上传了文件，存放路径为 `{file_path}`。若任务涉及该文件，请优先使用工具读取。"
+
     async def event_generator():
         yield f": {' ' * 1024}\n\n"
-        async for event in session.step_stream(prompt):
+        # 将 exec_mode 和 file_context 传入 Agent
+        async for event in session.step_stream(prompt, execution_mode=exec_mode, file_context=file_context, current_todos=current_todos):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         
-        # 流式输出完全结束（包含压缩上下文逻辑执行完毕）后，将最新的记忆落库更新
+        # 落库保存时，此时 session.messages 里只有纯粹干净的用户对话，零污染！
         database.save_session(session_id, session.permission_mode, session.messages)
 
     headers = {
