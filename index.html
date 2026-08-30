@@ -170,6 +170,12 @@
                                 <div v-if="trace.type === 'step'" class="text-emerald-500 font-bold">
                                     ▶ Iteration {{ trace.step }}/{{ trace.max_steps }}
                                 </div>
+                                <div v-if="trace.type === 'steer'" class="bg-amber-900/30 border border-amber-500/50 rounded p-2.5 text-amber-200">
+                                    <div class="font-bold text-amber-400 mb-1 flex items-center">
+                                        <i class="fa-solid fa-bolt mr-2"></i>收到即时纠偏指令
+                                    </div>
+                                    <div class="text-[12px]">{{ trace.content }}</div>
+                                </div>
                                 <div v-if="trace.type === 'tool'" class="bg-gray-900 border border-gray-800 rounded p-2 text-gray-300">
                                     <div class="text-amber-400 font-semibold mb-1 flex items-center justify-between">
                                         <span><i class="fa-solid fa-wrench mr-1"></i>{{ trace.name }}</span>
@@ -277,9 +283,16 @@
                         <input v-model="inputText" @keyup.enter="sendMessage" :disabled="isGlobalRunning"
                                placeholder="输入任务，或将文件拖拽至窗口内..."
                                class="flex-1 bg-gray-950 border border-gray-800 rounded-lg pl-11 pr-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 text-gray-100 placeholder-gray-600 disabled:opacity-50">
-                        <button @click="sendMessage" :disabled="isGlobalRunning || (!inputText.trim() && !selectedFile)"
+                        <!-- 正常发送按钮 -->
+                        <button v-if="!isGlobalRunning" @click="sendMessage" :disabled="!inputText.trim() && !selectedFile"
                                 class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 text-white px-5 py-2.5 rounded-lg text-sm transition flex items-center">
                             <i class="fa-solid fa-paper-plane mr-2"></i>发送
+                        </button>
+                        
+                        <!-- 运行时变为：即时纠偏按钮 -->
+                        <button v-else @click="sendSteer" :disabled="!inputText.trim()"
+                                class="bg-amber-600 hover:bg-amber-500 disabled:bg-gray-800 text-white px-5 py-2.5 rounded-lg text-sm transition flex items-center shadow-[0_0_10px_rgba(245,158,11,0.3)]">
+                            <i class="fa-solid fa-bolt mr-2"></i>即时纠偏
                         </button>
                     </div>
                 </div>
@@ -437,6 +450,25 @@
                         } catch (e) {
                             console.error('更新权限失败', e);
                         }
+                    }
+                };
+
+                const sendSteer = async () => {
+                    if (!inputText.value.trim()) return;
+                    const steerMsg = inputText.value;
+                    inputText.value = ''; // 清空输入框，但保持 isGlobalRunning 为 true
+                    
+                    try {
+                        await fetch('/api/chat/steer', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                session_id: currentSessionId.value,
+                                message: steerMsg
+                            })
+                        });
+                    } catch (e) {
+                        console.error('发送纠偏指令失败', e);
                     }
                 };
 
@@ -603,6 +635,12 @@
                         } else if (data.type === 'tool_output') {
                             const lastTool = activeDialogue.traces.slice().reverse().find(t => t.type === 'tool' && t.tool_call_id === data.tool_call_id);
                             if (lastTool) lastTool.output = data.output;
+                        } else if (data.type === 'steer_applied') {
+                            activeDialogue.traces.push({ 
+                                id: 'steer_' + Date.now(),
+                                type: 'steer', 
+                                content: data.content 
+                            });
                         } else if (data.type === 'todo_update') {
                             // 实时更新当前会话的任务面板数据
                             sessionTodoList.value[currentSessionId.value] = data.tasks;

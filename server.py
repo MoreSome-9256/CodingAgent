@@ -35,6 +35,10 @@ class ApprovalRequest(BaseModel):
     tool_call_id: str  # 新增此字段
     approved: bool
 
+class SteerRequest(BaseModel):
+    session_id: str
+    message: str
+
 @app.post("/api/sessions")
 def create_session(req: CreateSessionRequest):
     session_id = str(uuid.uuid4())[:8]
@@ -92,6 +96,16 @@ def approve_action(req: ApprovalRequest):
     
     # 修改：将 tool_call_id 一并传入
     session.resolve_approval(req.tool_call_id, req.approved)
+    return {"status": "ok"}
+
+@app.post("/api/chat/steer")
+def steer_agent(req: SteerRequest):
+    session = sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # 将消息打入该会话的干预队列
+    session.inject_steer(req.message)
     return {"status": "ok"}
 
 @app.get("/api/chat/stream")

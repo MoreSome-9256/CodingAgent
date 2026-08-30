@@ -62,6 +62,11 @@ class CodingAgentSession:
         # ===================================================================
         
         self.pending_approvals = {}  # 保持上一轮方案B的字典逻辑不变
+        self.steer_queue = []
+
+    def inject_steer(self, message: str):
+        """外部接口：向当前正在运行的会话注入纠偏指令"""
+        self.steer_queue.append(message)
 
     def resolve_approval(self, tool_call_id: str, approved: bool):
         """用户在前端点击允许或拒绝时调用，精准唤醒对应的工具调用"""
@@ -129,6 +134,20 @@ class CodingAgentSession:
         while step_count < self.max_steps:
             step_count += 1
             yield {"type": "step_start", "step": step_count, "max_steps": self.max_steps}
+
+            # ================= 【核心：安全点 Steer 拦截】 =================
+            if self.steer_queue:
+                # 提取并清空当前队列
+                steer_msgs = list(self.steer_queue)
+                self.steer_queue.clear()
+                
+                for sm in steer_msgs:
+                    # 组装为高优先级的用户指令，原子落盘写入真实上下文
+                    steer_content = f"【用户即时干预 (Steering)】: {sm}\n请立即根据上述指示调整你的后续行动计划。"
+                    self.messages.append({"role": "user", "content": steer_content})
+                    # 向前端广播干预已生效的信号
+                    yield {"type": "steer_applied", "content": sm}
+            # ===============================================================
 
             # ----------------- 【核心：非破坏性压缩与临时视图构建】 -----------------
             messages_view = []
