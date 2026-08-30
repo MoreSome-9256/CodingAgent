@@ -128,7 +128,23 @@ async def chat_stream(session_id: str, prompt: str, exec_mode: str = "auto", fil
             
             # 分发本地命令逻辑
             if command == "/help":
-                output = "**本地可用命令 (0 Token API 消耗)**:\n- `/status` : 查看当前 Agent 环境状态\n- `/clear_todo` : 清空右上角任务看板"
+                output = "**本地可用命令 (0 Token API 消耗)**:\n- `/status` : 查看当前 Agent 环境状态\n- `/clear_todo` : 清空右上角任务看板\n- `/remember <内容>` : 写入跨会话全局设定\n- `/clear_memory` : 清空全局设定"
+            
+            elif command == "/remember":
+                # 提取 /remember 后的具体内容
+                content = prompt[len("/remember"):].strip()
+                if content:
+                    # 追加写入到全局记忆文件中
+                    with open("MEMORY.md", "a", encoding="utf-8") as f:
+                        f.write(f"- {content}\n")
+                    output = f"✅ 已将以下设定永久存入全局记忆：\n`{content}`\n\n*(注：基于 Frozen Snapshot 保护机制，新记忆将在下一次新建会话时生效。)*"
+                else:
+                    output = "⚠️ 请在命令后加上要记住的内容，例如：`/remember 以后写代码都用 TypeScript 并且必须加注释`"
+            
+            elif command == "/clear_memory":
+                if os.path.exists("MEMORY.md"):
+                    os.remove("MEMORY.md")
+                output = "🗑️ 全局记忆文件已清空。新建会话后彻底生效。"
             elif command == "/status":
                 output = (
                     f"**Agent 运行状态探测**:\n"

@@ -46,8 +46,20 @@ class CodingAgentSession:
             base_url=self.base_url
         )
         
-        # 核心修改：如果有历史记忆则继承，否则使用初始 System Prompt
-        self.messages = history_messages if history_messages else [{"role": "system", "content": SYSTEM_PROMPT}]
+        # ================= 【核心新增：读取全局记忆冻结快照】 =================
+        global_memory = ""
+        if os.path.exists("MEMORY.md"):
+            with open("MEMORY.md", "r", encoding="utf-8") as f:
+                global_memory = f.read().strip()
+                
+        # 将全局记忆拼接到 SYSTEM_PROMPT 尾部
+        final_system_prompt = SYSTEM_PROMPT
+        if global_memory:
+            final_system_prompt += f"\n\n【全局用户个性化设定】:\n{global_memory}"
+            
+        # 初始化 messages：如果有历史则继承，否则使用注入了快照的 System Prompt
+        self.messages = history_messages if history_messages else [{"role": "system", "content": final_system_prompt}]
+        # ===================================================================
         
         self.pending_approvals = {}  # 保持上一轮方案B的字典逻辑不变
 
