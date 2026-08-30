@@ -111,6 +111,49 @@ async def chat_stream(session_id: str, prompt: str, exec_mode: str = "auto", fil
 
     session = sessions[session_id]
 
+    headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+    }
+
+    # ================= 【核心新增：0 Token 本地命令路由拦截】 =================
+    if prompt.strip().startswith("/"):
+        command = prompt.strip().split()[0].lower()
+        
+        async def local_command_generator():
+            yield f": {' ' * 1024}\n\n"
+            # 伪造一个步骤开始事件，让前端展现动画
+            yield f"data: {json.dumps({'type': 'step_start', 'step': 1, 'max_steps': 1}, ensure_ascii=False)}\n\n"
+            
+            # 分发本地命令逻辑
+            if command == "/help":
+                output = "**本地可用命令 (0 Token API 消耗)**:\n- `/status` : 查看当前 Agent 环境状态\n- `/clear_todo` : 清空右上角任务看板"
+            elif command == "/status":
+                output = (
+                    f"**Agent 运行状态探测**:\n"
+                    f"- 🪪 **会话 ID**: `{session_id}`\n"
+                    f"- 🛡️ **权限模式**: `{session.permission_mode}`\n"
+                    f"- 🧠 **记忆深度**: `{len(session.messages)}` 条历史记录"
+                )
+            elif command == "/clear_todo":
+                # 发送结构化事件，直接驱动前端清空看板
+                yield f"data: {json.dumps({'type': 'todo_update', 'tasks': []}, ensure_ascii=False)}\n\n"
+                output = "✅ 任务看板已在本地重置完毕。"
+            else:
+                output = f"⚠️ 未知本地命令: `{command}`。输入 `/help` 查看所有可用命令。"
+
+            # 伪造一个后台执行痕迹，维持前端 UI 统一体验
+            yield f"data: {json.dumps({'type': 'tool_call', 'name': 'local_command', 'args': {'cmd': command}, 'tool_call_id': 'local'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'tool_output', 'name': 'local_command', 'output': 'Bypassed LLM successfully.', 'tool_call_id': 'local'}, ensure_ascii=False)}\n\n"
+            
+            # 输出总结并立刻关闭流
+            yield f"data: {json.dumps({'type': 'finish', 'content': output}, ensure_ascii=False)}\n\n"
+
+        # 拦截成功，直接返回本地流，绝不调用 OpenAI/DeepSeek 接口！
+        return StreamingResponse(local_command_generator(), media_type="text/event-stream", headers=headers)
+    # =========================================================================
+
     # 根据上传文件的性质构造临时提示内容
     file_context = None
     if file_path:
@@ -128,11 +171,7 @@ async def chat_stream(session_id: str, prompt: str, exec_mode: str = "auto", fil
         # 落库保存时，此时 session.messages 里只有纯粹干净的用户对话，零污染！
         database.save_session(session_id, session.permission_mode, session.messages)
 
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no"
-    }
+    
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
 
 # 【新增】供前端 iframe 直接运行本地生成的 HTML/Web 项目

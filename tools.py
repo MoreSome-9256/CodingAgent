@@ -2,8 +2,19 @@ import os
 import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
+import uuid
+import tempfile
 
 MAX_OUTPUT_LENGTH = 3000  # 单次工具输出最大字符数，防止撑爆上下文 Token
+
+def _save_large_output(content: str, prefix: str = "log") -> str:
+    """内部辅助函数：将超长结果落盘到临时目录"""
+    os.makedirs("test_code/.logs", exist_ok=True)
+    log_name = f"{prefix}_{uuid.uuid4().hex[:8]}.txt"
+    log_path = os.path.join("test_code/.logs", log_name)
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return log_path
 
 def run_command(command: str, **kwargs) -> str:
     """在本地系统执行终端命令，包含超时控制、UTF-8强制容错与长输出截断"""
@@ -37,11 +48,21 @@ def run_command(command: str, **kwargs) -> str:
         
         output = output.strip() if output.strip() else "Command executed successfully with no output."
         
-        # 保护机制：如果输出过长，保留首尾关键信息，中间截断
+        # 核心改造：L3 大结果落盘机制
         if len(output) > MAX_OUTPUT_LENGTH:
+            # 完整输出落盘本地
+            log_path = _save_large_output(output, "cmd")
+            
+            # 返回给模型的截断视图带上本地路径指引
             head = output[:1500]
             tail = output[-1500:]
-            output = f"{head}\n\n... [Output truncated due to length, showing first and last 1500 chars] ...\n\n{tail}"
+            output = (
+                f"{head}\n\n"
+                f"... [Output truncated due to length (Total {len(output)} chars)]. \n"
+                f"💡 [L3 Spilling]: The full log has been written to '{log_path}'. \n"
+                f"If you need to inspect the hidden middle parts (like deep stack traces), use 'read_file' on this log path. ...\n\n"
+                f"{tail}"
+            )
             
         return output
     except subprocess.TimeoutExpired:
@@ -124,17 +145,17 @@ def read_file(path: str, **kwargs) -> str:
         return f"Error reading file '{path}': {str(e)}"
 
 def write_file(path: str, content: str, **kwargs) -> str:
-    """新建或全量覆写文件"""
     try:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+        # 临时文件 + 原子替换，防止中途断电损坏原文件
+        dir_name = os.path.dirname(os.path.abspath(path))
+        with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
+            tf.write(content)
+            tf.flush()
+            os.fsync(tf.fileno()) # 确保刷入磁盘
+            temp_path = tf.name
+        os.replace(temp_path, path) # 操作系统级原子覆盖
         return f"File '{path}' written successfully."
-    except PermissionError:
-        return (
-            f"Error: Permission denied when writing to '{path}'.\n"
-            f"💡 [Self-Healing Suggestion]: Ensure you are saving within user-accessible folders like 'test_code/'."
-        )
     except Exception as e:
         return f"Error writing file '{path}': {str(e)}"
 

@@ -57,43 +57,43 @@ class CodingAgentSession:
         if future and not future.done():
             future.set_result(approved)
 
-    def _compress_context(self):
-        """
-        四层廉价优先上下文压缩管线 (滑动窗口 + 0 Token 损耗占位符)
-        保护头部 (System Prompt) 和尾部 (最新 6 条记录)，对中间过期的冗长记录进行无损状态裁切。
-        """
-        # 只有当历史消息列表超过一定长度时才触发，避免过早压缩
-        if len(self.messages) <= 12:
-            return
+    # def _compress_context(self):
+    #     """
+    #     四层廉价优先上下文压缩管线 (滑动窗口 + 0 Token 损耗占位符)
+    #     保护头部 (System Prompt) 和尾部 (最新 6 条记录)，对中间过期的冗长记录进行无损状态裁切。
+    #     """
+    #     # 只有当历史消息列表超过一定长度时才触发，避免过早压缩
+    #     if len(self.messages) <= 12:
+    #         return
             
-        # 尾部保护窗口：始终保留最近的 6 条消息完整无缺，保证当前步骤的推理连贯性
-        safe_tail_length = 6
+    #     # 尾部保护窗口：始终保留最近的 6 条消息完整无缺，保证当前步骤的推理连贯性
+    #     safe_tail_length = 6
         
-        # 遍历从第 1 条（跳过索引 0 的 system prompt）到尾部保护窗口之前的所有历史消息
-        for i in range(1, len(self.messages) - safe_tail_length):
-            msg = self.messages[i]
+    #     # 遍历从第 1 条（跳过索引 0 的 system prompt）到尾部保护窗口之前的所有历史消息
+    #     for i in range(1, len(self.messages) - safe_tail_length):
+    #         msg = self.messages[i]
             
-            # L2 压缩：针对历史工具调用的超长输出
-            if msg.get("role") == "tool":
-                content = msg.get("content", "")
-                if len(content) > 300:
-                    # 保留前 150 字符（通常包含状态码或首行报错），和后 50 字符（通常包含总结或异常尾部）
-                    # 中间替换为明确的占位符，告知大模型该内容它之前已经看过了
-                    head = content[:150]
-                    tail = content[-50:]
-                    msg["content"] = (
-                        f"{head}\n\n"
-                        f"... [L2 Compression: Large output truncated to save context window. "
-                        f"Content previously inspected successfully.] ...\n\n"
-                        f"{tail}"
-                    )
+    #         # L2 压缩：针对历史工具调用的超长输出
+    #         if msg.get("role") == "tool":
+    #             content = msg.get("content", "")
+    #             if len(content) > 300:
+    #                 # 保留前 150 字符（通常包含状态码或首行报错），和后 50 字符（通常包含总结或异常尾部）
+    #                 # 中间替换为明确的占位符，告知大模型该内容它之前已经看过了
+    #                 head = content[:150]
+    #                 tail = content[-50:]
+    #                 msg["content"] = (
+    #                     f"{head}\n\n"
+    #                     f"... [L2 Compression: Large output truncated to save context window. "
+    #                     f"Content previously inspected successfully.] ...\n\n"
+    #                     f"{tail}"
+    #                 )
             
-            # L1 压缩：针对大模型过去轮次中产生的冗长思维链/解释文本
-            elif msg.get("role") == "assistant" and msg.get("content"):
-                content = msg["content"]
-                if len(content) > 400:
-                    # 历史思考过程不再重要，保留前 100 字作为上下文锚点即可
-                    msg["content"] = content[:100] + "\n... [L1 Compression: Previous reasoning truncated] ..."
+    #         # L1 压缩：针对大模型过去轮次中产生的冗长思维链/解释文本
+    #         elif msg.get("role") == "assistant" and msg.get("content"):
+    #             content = msg["content"]
+    #             if len(content) > 400:
+    #                 # 历史思考过程不再重要，保留前 100 字作为上下文锚点即可
+    #                 msg["content"] = content[:100] + "\n... [L1 Compression: Previous reasoning truncated] ..."
 
     # -------------------- 插入新的类方法 --------------------
     async def _run_tool_async(self, func_name: str, func_args: dict) -> str:
@@ -110,7 +110,7 @@ class CodingAgentSession:
             return f"Tool Internal Unexpected Error: {str(e)}.\n💡 [Self-Healing Suggestion]: Try an alternative strategy."
 
     async def step_stream(self, user_prompt: str, execution_mode: str = "auto", file_context: str = None, current_todos: str = None) -> AsyncGenerator[Dict[str, Any], None]:
-        # 底层真实的持久化上下文：只保存用户最原始纯净的输入，零污染！
+        # 底层真实的持久化上下文：只保存用户原始输入与真实工具返回，100%零污染
         self.messages.append({"role": "user", "content": user_prompt})
         step_count = 0
 
@@ -118,53 +118,65 @@ class CodingAgentSession:
             step_count += 1
             yield {"type": "step_start", "step": step_count, "max_steps": self.max_steps}
 
-            self._compress_context()
-
-            # ----------------- 【核心：临时视图隔离构建】 -----------------
-            # 浅拷贝 messages 列表结构作为临时推理视图，绝不影响 self.messages
-            messages_view = list(self.messages)
+            # ----------------- 【核心：非破坏性压缩与临时视图构建】 -----------------
+            messages_view = []
+            safe_tail_length = 6
+            total_msgs = len(self.messages)
             
-            # 仅在当前这一轮且处于首步或迭代中，构造临时系统约束注入视图末尾
+            # 1. 动态生成带 L1/L2 压缩的浅拷贝视图
+            for i, msg_raw in enumerate(self.messages):
+                # 浅拷贝字典，修改 msg["content"] 绝不会影响 self.messages 里的原对象
+                msg = dict(msg_raw)
+                
+                # 仅当历史总长度超过12，且当前条目属于“中间过期轮次”时，实施压缩
+                if total_msgs > 12 and 0 < i < total_msgs - safe_tail_length:
+                    if msg.get("role") == "tool":
+                        content = msg.get("content", "")
+                        if len(content) > 300:
+                            # L2 压缩：旧工具结果占位
+                            msg["content"] = f"{content[:150]}\n\n... [L2 Compression: Content previously inspected successfully.] ...\n\n{content[-50:]}"
+                    elif msg.get("role") == "assistant" and msg.get("content"):
+                        content = msg["content"]
+                        if len(content) > 400:
+                            # L1 压缩：旧思维链裁切
+                            msg["content"] = content[:100] + "\n... [L1 Compression: Previous reasoning truncated] ..."
+                
+                messages_view.append(msg)
+            
+            # 2. 构造临时系统约束（注入视图末尾，绝不落盘）
             ephemeral_instructions = []
             if file_context:
                 ephemeral_instructions.append(file_context)
             
-            # 【核心修复】：精准区分“初次制定计划”与“后续执行计划”
             is_empty_todo = not current_todos or current_todos.strip() in ["", "[]", "{}"]
             
             if execution_mode == "plan":
                 if is_empty_todo:
-                    # 阶段 1：初次进入，强制要求先输出详细大纲，再同步看板，最后交出控制权
                     ephemeral_instructions.append(
                         "【🚨 强制指令 - 计划制定阶段】：你当前处于引导计划模式！\n"
-                        "为了确保逻辑清晰，请必须严格按顺序执行以下两步：\n"
-                        "1. **正文输出大纲**：在文本回复中，详细输出一份 Markdown 格式的任务拆解大纲（必须包含技术方案、功能模块细化、测试步骤等）。\n"
-                        "2. **同步任务看板**：同时调用 `update_todo` 工具，将上述大纲中的核心步骤提炼并存入计划中。\n"
-                        "【红线警告】：在本轮对话中，绝对禁止调用 `write_file`、`edit_file` 或 `run_command` 开始实际编码！调用完 `update_todo` 后必须立刻停止，在正文末尾询问用户是否同意该计划。"
+                        "你的唯一任务是：调用 `update_todo` 工具列出拆解步骤，然后**必须立刻停止调用任何其他工具**，直接输出一段文本询问用户是否同意该计划。\n"
+                        "严禁在本轮对话中调用 `write_file`, `edit_file`, `run_command`！"
                     )
                 else:
-                    # 阶段 2：计划已制定，解禁写文件权限，引导按部就班执行
                     ephemeral_instructions.append(
-                        "【引导计划模式 - 执行阶段】：任务看板已就绪。请根据用户的最新反馈（如“同意”或修改意见），严格按照计划步骤开始执行。\n"
+                        "【引导计划模式 - 执行阶段】：任务看板已就绪。请根据用户的最新反馈，严格按照计划步骤开始执行。\n"
                         "执行过程中，请务必持续调用 `update_todo` 推进对应任务的状态（pending -> in_progress -> completed）。"
                     )
             
-            # 【新增】：如果前端传来了现有的任务列表，注入大模型的短期记忆
-            if current_todos:
+            # 【修复冗余】：仅保留此一处记忆注入，防止重复下发
+            if not is_empty_todo:
                 ephemeral_instructions.append(
                     f"【当前任务看板状态】：\n{current_todos}\n"
                     "请注意：你之前已经制定了上述任务计划，请依据此计划继续往下执行（例如完成下一个 pending 的任务）。"
                     "调用 update_todo 时，请保留已有任务的 id 和 title，仅更新 status，切勿直接清空原计划。"
                 )
             
-            # 如果存在临时修饰指令，仅在发往大模型的视图副本末尾临时包装，不落盘、不持久化
+            # 临时拼接指令到最后一条 user 消息
             if ephemeral_instructions:
                 combined_ephemeral = "\n\n".join(ephemeral_instructions)
-                # 复制最后一条 user 消息并临时拼接指令
-                last_msg = dict(messages_view[-1])
+                last_msg = messages_view[-1]
                 if last_msg.get("role") == "user":
                     last_msg["content"] = f"{last_msg['content']}\n\n(临时环境提示:\n{combined_ephemeral})"
-                    messages_view[-1] = last_msg
             # -------------------------------------------------------------
 
             # 2. 发起 API 请求时，传入的是 messages_view 而不是 self.messages
