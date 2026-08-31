@@ -13,6 +13,11 @@ File Storage & Workspace Rules:
 - Unless the user explicitly specifies a different directory or file path, ALWAYS place newly created code and test files under the 'test_code/' directory (e.g., 'test_code/solution.py', 'test_code/snake.html').
 - If the user asks for interactive apps, games, UI tools, or visual programs, prefer creating a standalone, self-contained HTML file (including CSS & JavaScript) under 'test_code/' so it can be previewed directly.
 
+CRITICAL RULES FOR WEB/HTML/UI PROJECTS:
+1. NEVER use 'node -e' or shell commands to extract, parse, or evaluate HTML/JS scripts! HTML files are executed directly by the user's browser, not Node.
+2. NEVER run commands just to "check if an image exists" or "check image dimensions" unless explicitly asked. Assume paths under 'uploads/' or 'test_code/' are valid.
+3. Once the HTML file is written or edited, DO NOT keep inspecting it. You MUST STOP immediately, output the final summary, and let the user test it.
+
 Workflow:
 1. [TASK PLANNING] For new complex tasks, call 'update_todo' to create a checklist. If a checklist already exists in the context, DO NOT create a new one from scratch; instead, continue updating the existing tasks' statuses.
 2. Explore existing files or run tests to understand the current state if needed.
@@ -34,7 +39,7 @@ PARALLEL_SAFE_TOOLS = {"list_dir", "read_file"}
 SENSITIVE_TOOLS = {"write_file", "edit_file"}
 
 class CodingAgentSession:
-    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None, max_steps: int = 15, permission_mode: str = "full", history_messages: list = None):
+    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None, max_steps: int = 20, permission_mode: str = "full", history_messages: list = None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.model_name = model_name or os.getenv("MODEL_NAME", "deepseek-chat")
@@ -185,7 +190,9 @@ class CodingAgentSession:
                 if is_empty_todo:
                     ephemeral_instructions.append(
                         "【🚨 强制指令 - 计划制定阶段】：你当前处于引导计划模式！\n"
-                        "你的唯一任务是：调用 `update_todo` 工具列出拆解步骤，然后**必须立刻停止调用任何其他工具**，直接输出一段文本询问用户是否同意该计划。\n"
+                        "请完成两件事：\n"
+                        "1. 调用 `update_todo` 将任务拆解为清晰的子任务项。\n"
+                        "2. **必须在最终的文本回复中输出一份详尽的方案阐述**（包含：技术选型、架构与模块划分、核心玩法/功能实现思路、可能遇到的挑战等），并在文末询问用户是否同意该方案以开始执行。\n"
                         "严禁在本轮对话中调用 `write_file`, `edit_file`, `run_command`！"
                     )
                 else:
@@ -193,13 +200,19 @@ class CodingAgentSession:
                         "【引导计划模式 - 执行阶段】：任务看板已就绪。请根据用户的最新反馈，严格按照计划步骤开始执行。\n"
                         "执行过程中，请务必持续调用 `update_todo` 推进对应任务的状态（pending -> in_progress -> completed）。"
                     )
-            
+
             # 【修复冗余】：仅保留此一处记忆注入，防止重复下发
             if not is_empty_todo:
                 ephemeral_instructions.append(
                     f"【当前任务看板状态】：\n{current_todos}\n"
                     "请注意：你之前已经制定了上述任务计划，请依据此计划继续往下执行（例如完成下一个 pending 的任务）。"
                     "调用 update_todo 时，请保留已有任务的 id 和 title，仅更新 status，切勿直接清空原计划。"
+                )
+
+            if step_count >= self.max_steps - 3:
+                ephemeral_instructions.append(
+                    f"⚠️ 【系统警告】：当前已是第 {step_count}/{self.max_steps} 步，可用步数即将耗尽！\n"
+                    "严禁再调用任何检查、命令或测试工具！请立刻基于当前已完成的代码，输出最终总结并结束任务！"
                 )
             
             # 临时拼接指令到最后一条 user 消息
@@ -315,9 +328,32 @@ class CodingAgentSession:
             # ====== 新增：硬性物理阻断 ======
             # 如果是引导计划模式的第一轮，且刚刚调用了 update_todo 生成计划，必须强行刹车！
             if execution_mode == "plan" and is_empty_todo:
-                if any(t.function.name == "update_todo" for t in message.tool_calls):
-                    # 把大模型附带生成的大纲文本（message.content）推给前端，然后直接打断循环
-                    yield_content = message.content if message.content else "任务计划清单已生成，请在右上角看板查看。若无异议，请回复“同意”以开始执行代码编写。"
+                todo_call = next((t for t in message.tool_calls if t.function.name == "update_todo"), None)
+                if todo_call:
+                    try:
+                        t_args = json.loads(todo_call.function.arguments)
+                        tasks = t_args.get("tasks", [])
+                        task_md = "\n".join([f"- **步骤 {t.get('id', idx+1)}**: {t.get('title', '')}" for idx, t in enumerate(tasks)])
+                    except Exception:
+                        task_md = "- 待按步骤执行开发任务"
+
+                    # 提取模型附带生成的短句
+                    raw_content = message.content.strip() if message.content else ""
+                    
+                    # 动态判定：如果模型自己写了长篇大论（>100字），就保留它的原话；
+                    # 如果很短（比如那句英文过渡句），直接废弃，换成标准纯正的中文模板。
+                    if len(raw_content) > 100:
+                        prefix = raw_content + "\n\n### 📋 详细执行步骤：\n\n"
+                    else:
+                        prefix = "### 📋 项目实施规划方案\n\n针对您提出的需求，我已完成初步架构梳理，并拆解出以下执行路径：\n\n"
+
+                    yield_content = (
+                        f"{prefix}"
+                        f"{task_md}\n\n"
+                        "---\n"
+                        "💡 **任务清单已同步至右上角动态看板**。请审查上述开发计划，若无异议，请回复 **“同意”** 或直接补充您的修改意见，我将随后开始编写代码。"
+                    )
+                    
                     yield {"type": "finish", "content": yield_content}
                     break
         else:

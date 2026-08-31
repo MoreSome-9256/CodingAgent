@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Flappy Bird - 简易版</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(180deg, #70c5ce, #b7e4f0);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif;
+    overflow: hidden;
+  }
+  #gameWrap {
+    position: relative;
+    width: 400px;
+    height: 600px;
+  }
+  canvas {
+    display: block;
+    background: linear-gradient(#8fd7e8, #c8f0f7);
+    border-radius: 8px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .tip {
+    color: #fff;
+    margin-top: 14px;
+    font-size: 15px;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    letter-spacing: 1px;
+  }
+  .tip kbd {
+    background: rgba(255,255,255,0.25);
+    border-radius: 4px;
+    padding: 1px 7px;
+    margin: 0 3px;
+    font-family: inherit;
+  }
+  .importRow {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: #fff;
+    font-size: 14px;
+  }
+  .importBtn {
+    background: #2e8b32;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+    box-shadow: 0 3px 8px rgba(0,0,0,0.25);
+    transition: background 0.2s, transform 0.1s;
+    font-family: inherit;
+  }
+  .importBtn:hover { background: #3aa63f; }
+  .importBtn:active { transform: scale(0.96); }
+  .importLabel {
+    text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    opacity: 0.9;
+  }
+  #fileName {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+  <div id="gameWrap">
+    <canvas id="game" width="400" height="600"></canvas>
+  </div>
+  <div class="tip">点击画面 / 按 <kbd>空格</kbd> 或 <kbd>↑</kbd> 控制小鸟上升</div>
+  <div class="importRow">
+    <button id="importBtn" class="importBtn" type="button">🎨 导入小鸟贴图</button>
+    <button id="flipBtn" class="importBtn" type="button">↕ 朝向：右</button>
+    <span class="importLabel" id="fileName">当前贴图：picture.png</span>
+    <input type="file" id="fileInput" accept="image/*" style="display:none;">
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = 400, H = 600;
+
+  // ---------- Web Audio 音效系统 ----------
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const sound = {
+    play: function(type, freq1, freq2, duration, vol) {
+      if(audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq1, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(freq2, audioCtx.currentTime + duration);
+      gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration);
+    },
+    jump: function() { this.play('sine', 300, 600, 0.1, 0.5); },
+    hit: function() { this.play('sawtooth', 150, 40, 0.3, 0.6); },
+    score: function() { 
+      this.play('square', 800, 1200, 0.1, 0.1); 
+      setTimeout(() => this.play('square', 1200, 1600, 0.1, 0.1), 100);
+    }
+  };
+
+  // ---------- 物理参数 ----------
+  const GRAVITY = 0.15;      // 降低重力，下落更柔和
+  const JUMP_V = -5.6;       // 提高跳跃力，跳得更稳
+  const MAX_FALL = 5;        // 限制最大下落速度
+
+  // ---------- 管道参数 ----------
+  const PIPE_W = 62;
+  const PIPE_GAP = 182;      // 缺口调大，飞起来更从容
+  const PIPE_SPEED = 1.85;   // 管道移动更慢
+  const PIPE_INTERVAL = 125; // 生成更稀疏，反应时间更充裕
+
+  // ---------- 小鸟参数 ----------
+  const BIRD_X = 100;
+  const BIRD_R = 14;
+
+  // ---------- 地面 ----------
+  const GROUND_H = 70;
+
+  // ---------- 背景滚动 ----------
+  const BG_SPEED = 1;
+  let bgOffset = 0;
+
+  // ---------- 游戏状态 ----------
+  // 'ready' | 'playing' | 'over'
+  let state = 'ready';
+  let bird = { x: BIRD_X, y: H / 2.3, vy: 0, frame: 0 };
+  let pipes = [];
+  let frameCount = 0;
+  let score = 0;
+  let best = 0;
+  let flashAlpha = 0; // 用于撞击时的白屏闪烁效果
+
+  // ---------- 小鸟贴图（支持用户自导入）----------
+  const birdImg = new Image();
+  let birdFlip = false; // 是否水平翻转贴图（有些贴图小鸟朝左）
+
+  // 设置小鸟贴图：src 可以是相对路径或本地文件的 Data URL
+  function applyBirdImage(src) {
+    birdImg.src = src;
+  }
+
+  // 切换左右朝向，并更新按钮文字
+  function toggleBirdFlip() {
+    birdFlip = !birdFlip;
+    const btn = document.getElementById('flipBtn');
+    if (btn) btn.textContent = birdFlip ? '↕ 朝向：左' : '↕ 朝向：右';
+  }
+
+  // 默认加载内置贴图
+  applyBirdImage('picture.png');
+
+  // 从 localStorage 读取最高分
+  try { best = parseInt(localStorage.getItem('flappy_best') || '0', 10) || 0; } catch (e) {}
+
+  // ---------- 装饰元素（背景云朵/小岛）----------
+  const clouds = [];
+  (function initClouds() {
+    for (let i = 0; i < 5; i++) {
+      clouds.push({ x: Math.random() * W, y: 40 + Math.random() * 160, s: 0.7 + Math.random() * 0.8 });
+    }
+  })();
+
+  // ---------- 工具 ----------
+  function resetBird() {
+    bird = { x: BIRD_X, y: H / 2.3, vy: 0, frame: 0 };
+  }
+  function resetGame() {
+    pipes = [];
+    frameCount = 0;
+    score = 0;
+    flashAlpha = 0;
+    resetBird();
+    state = 'ready';
+  }
+  function gameOver() {
+    if (state !== 'over') sound.hit(); // 播放撞击音效
+    state = 'over';
+    flashAlpha = 1.0; // 触发撞击闪屏
+    if (score > best) {
+      best = score;
+      try { localStorage.setItem('flappy_best', String(best)); } catch (e) {}
+    }
+  }
+
+  // ---------- 管道生成 ----------
+  function spawnPipe() {
+    const minTop = 60;
+    const maxTop = H - GROUND_H - PIPE_GAP - 60;
+    const top = minTop + Math.random() * (maxTop - minTop);
+    pipes.push({ x: W, top: top, passed: false });
+  }
+
+  // ---------- 小鸟物理 ----------
+  function updateBird() {
+    bird.vy += GRAVITY;
+    if (bird.vy > MAX_FALL) bird.vy = MAX_FALL;
+    if (bird.y < BIRD_R) bird.y = BIRD_R;
+    bird.y += bird.vy;
+    // 扇翅膀动画
+    bird.frame = (bird.frame + 0.18) % 3;
+  }
+
+  // ---------- 碰撞检测 ----------
+  function collides() {
+    const centerY = bird.y;
+    // 撞地面或顶部
+    if (centerY + BIRD_R > H - GROUND_H || centerY - BIRD_R < 0) return true;
+
+    for (let p of pipes) {
+      // 只检测 X 上相交的管道
+      if (bird.x + BIRD_R > p.x && bird.x - BIRD_R < p.x + PIPE_W) {
+        const inGapY = centerY - BIRD_R > p.top && centerY + BIRD_R < p.top + PIPE_GAP;
+        if (!inGapY) return true;
+      }
+    }
+    return false;
+  }
+
+  // ---------- 计分 ----------
+  function updateScore() {
+    for (let p of pipes) {
+      if (!p.passed && p.x + PIPE_W < bird.x - BIRD_R) {
+        p.passed = true;
+        score++;
+        sound.score(); // 播放得分音效
+      }
+    }
+  }
+
+  // ---------- 更新逻辑 ----------
+  function update() {
+    // 仅在非游戏结束状态下滚动背景和地面，实现撞停效果
+    if (state !== 'over') {
+      bgOffset = (bgOffset + BG_SPEED) % 46;
+    }
+
+    if (state === 'ready') {
+      // 小鸟轻微上下浮动
+      bird.y = H / 2.3 + Math.sin(frameCount * 0.06) * 8;
+      bird.frame = (bird.frame + 0.08) % 3;
+      frameCount++;
+      return;
+    }
+
+    if (state === 'playing') {
+      frameCount++;
+      updateBird();
+      updateScore();
+
+      // 生成管道
+      if (frameCount % PIPE_INTERVAL === 0) spawnPipe();
+
+      // 管道移动
+      for (let p of pipes) p.x -= PIPE_SPEED;
+      // 移除越界管道
+      pipes = pipes.filter(function (p) { return p.x + PIPE_W > -10; });
+
+      if (collides()) gameOver();
+    }
+
+    // state === 'over' 时小鸟继续下落，但管道不再后退，体现“卡在柱子上”的撞击感
+    if (state === 'over') {
+      bird.vy += GRAVITY * 1.5; // 撞击后掉落稍快一些
+      if (bird.vy > MAX_FALL * 1.5) bird.vy = MAX_FALL * 1.5;
+      bird.y += bird.vy;
+      if (bird.y + BIRD_R > H - GROUND_H) bird.y = H - GROUND_H - BIRD_R;
+      
+      // 闪屏特效衰减
+      if (flashAlpha > 0) flashAlpha -= 0.05;
+    }
+  }
+
+  // ================= 绘制 =================
+  function drawBackground() {
+    // 天空
+    ctx.fillStyle = '#8fd7e8';
+    ctx.fillRect(0, 0, W, H);
+
+    // 云朵
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    clouds.forEach(function (c) {
+      let cx = (c.x - bgOffset * 0.3) % (W + 120);
+      if (cx < 0) cx += W + 120;
+      ctx.beginPath();
+      ctx.arc(cx - 100, c.y, 22 * c.s, 0, Math.PI * 2);
+      ctx.arc(cx - 62, c.y - 12, 26 * c.s, 0, Math.PI * 2);
+      ctx.arc(cx - 30, c.y, 20 * c.s, 0, Math.PI * 2);
+      ctx.arc(cx - 64, c.y + 10, 18 * c.s, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  function drawPipes() {
+    for (let p of pipes) {
+      const rim = 8;
+      // 上管道
+      ctx.fillStyle = '#3aa63f';
+      ctx.fillRect(p.x, 0, PIPE_W, p.top);
+      ctx.fillStyle = '#60c95f';
+      ctx.fillRect(p.x + 4, 0, PIPE_W - 8, p.top - 4);
+      // 上管口（顶部）
+      ctx.fillStyle = '#2e8b32';
+      ctx.fillRect(p.x - 4, p.top - rim, PIPE_W + 8, rim);
+      ctx.fillStyle = '#55bb52';
+      ctx.fillRect(p.x - 4, p.top - rim, PIPE_W + 8, 4);
+
+      // 下管道
+      const gapTop = p.top + PIPE_GAP;
+      ctx.fillStyle = '#3aa63f';
+      ctx.fillRect(p.x, gapTop, PIPE_W, H - gapTop);
+      ctx.fillStyle = '#60c95f';
+      ctx.fillRect(p.x + 4, gapTop + 4, PIPE_W - 8, H - gapTop - 4);
+      // 下管口
+      ctx.fillStyle = '#2e8b32';
+      ctx.fillRect(p.x - 4, gapTop, PIPE_W + 8, rim);
+      ctx.fillStyle = '#55bb52';
+      ctx.fillRect(p.x - 4, gapTop + 4, PIPE_W + 8, 4);
+    }
+  }
+
+  function drawGround() {
+    ctx.fillStyle = '#58c24b';
+    ctx.fillRect(0, H - GROUND_H, W, GROUND_H);
+    ctx.fillStyle = '#d3a02c';
+    for (let i = 0; i < W / 46 + 1; i++) {
+      const x = i * 46 - bgOffset;
+      const y = H - GROUND_H + 8;
+      ctx.beginPath();
+      ctx.moveTo(x, y); ctx.lineTo(x + 14, y - 8); ctx.lineTo(x + 28, y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = '#e5b74f';
+    ctx.fillRect(0, H - GROUND_H, W, 4);
+  }
+
+  function drawBird() {
+    const ang = Math.max(-0.5, Math.min(bird.vy * 0.07, 1.0));
+
+    ctx.save();
+    ctx.translate(bird.x, bird.y);
+    ctx.rotate(ang);
+
+    // 使用贴图代替自绘小鸟（支持用户导入的任意图片）
+    // 统一贴图尺寸，保持碰撞范围与显示一致
+    const imgW = 44;
+    const imgH = 32;
+    if (birdImg.complete && birdImg.naturalWidth > 0) {
+      if (birdFlip) {
+        // 水平翻转贴图（处理头部向左的图片）
+        ctx.scale(-1, 1);
+        ctx.drawImage(birdImg, -imgW / 2, -imgH / 2, imgW, imgH);
+      } else {
+        ctx.drawImage(birdImg, -imgW / 2, -imgH / 2, imgW, imgH);
+      }
+    } else {
+      // 图片未加载完成时，先用简单占位图形兜底
+      ctx.fillStyle = '#fbd23a';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 14, 11, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  function drawUI() {
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 4;
+    ctx.font = 'bold 15px "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.strokeText('得分: ' + score, 18, 18);
+    ctx.fillText('得分: ' + score, 18, 18);
+    ctx.strokeText('最高: ' + best, 18, 44);
+    ctx.fillText('最高: ' + best, 18, 44);
+
+    if (state === 'ready') {
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 40px "Segoe UI", Arial, sans-serif';
+      ctx.lineWidth = 6;
+      ctx.strokeText('Flappy Bird', W / 2, H / 2 - 100);
+      ctx.fillText('Flappy Bird', W / 2, H / 2 - 100);
+      ctx.font = 'bold 20px "Segoe UI", Arial, sans-serif';
+      ctx.lineWidth = 4;
+      ctx.strokeText('点击开始', W / 2, H / 2 + 60);
+      ctx.fillText('点击开始', W / 2, H / 2 + 60);
+    }
+
+    if (state === 'over') {
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 36px "Segoe UI", Arial, sans-serif';
+      ctx.lineWidth = 6;
+      ctx.strokeText('游戏结束', W / 2, H / 2 - 50);
+      ctx.fillText('游戏结束', W / 2, H / 2 - 50);
+
+      // 半透明面板
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      roundRect(ctx, W / 2 - 110, H / 2 - 6, 220, 110, 12);
+      ctx.fill();
+
+      ctx.font = 'bold 20px "Segoe UI", Arial, sans-serif';
+      ctx.lineWidth = 4;
+      ctx.strokeText('得分  ' + score, W / 2, H / 2 + 16);
+      ctx.fillStyle = '#fff';
+      ctx.fillText('得分  ' + score, W / 2, H / 2 + 16);
+      ctx.strokeText('最高  ' + best, W / 2, H / 2 + 46);
+      ctx.fillText('最高  ' + best, W / 2, H / 2 + 46);
+
+      ctx.font = 'bold 18px "Segoe UI", Arial, sans-serif';
+      ctx.strokeText('点击重新开始', W / 2, H / 2 + 86);
+      ctx.fillText('点击重新开始', W / 2, H / 2 + 86);
+    }
+  }
+
+  function roundRect(context, x, y, w, h, r) {
+    context.beginPath();
+    context.moveTo(x + r, y);
+    context.arcTo(x + w, y, x + w, y + h, r);
+    context.arcTo(x + w, y + h, x, y + h, r);
+    context.arcTo(x, y + h, x, y, r);
+    context.arcTo(x, y, x + w, y, r);
+    context.closePath();
+  }
+
+  function draw() {
+    drawBackground();
+    drawPipes();
+    drawGround();
+    drawBird();
+    drawUI();
+
+    // 绘制闪屏叠加层
+    if (flashAlpha > 0) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  // ---------- 游戏主循环 ----------
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- 输入处理 ----------
+  function handleJump() {
+    if (state === 'ready') {
+      state = 'playing';
+      sound.jump();
+    } else if (state === 'playing') {
+      bird.vy = JUMP_V;
+      sound.jump();
+    } else if (state === 'over') {
+      resetGame();
+      state = 'playing';
+      bird.vy = JUMP_V;
+      sound.jump();
+    }
+  }
+
+  canvas.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    handleJump();
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      e.preventDefault();
+      handleJump();
+    }
+  });
+
+  // 兼容老式触摸
+  canvas.addEventListener('touchstart', function (e) {
+    e.preventDefault();
+    handleJump();
+  }, { passive: false });
+
+  // ---------- 用户自定义导入小鸟贴图 ----------
+  const importBtn = document.getElementById('importBtn');
+  const fileInput = document.getElementById('fileInput');
+  const fileNameEl = document.getElementById('fileName');
+  const flipBtn = document.getElementById('flipBtn');
+
+  // 点击按钮 -> 触发文件选择
+  importBtn.addEventListener('click', function () {
+    fileInput.click();
+  });
+
+  // 翻转方向按钮
+  flipBtn.addEventListener('click', toggleBirdFlip);
+
+  // 选择本地图片后用 FileReader 读取并替换贴图
+  fileInput.addEventListener('change', function () {
+    const file = this.files && this.files[0];
+    if (!file) return;
+
+    // 校验是否为图片
+    if (!/^image\//.test(file.type)) {
+      alert('请选择图片文件（PNG/JPG/GIF/WebP 等）');
+      this.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      applyBirdImage(e.target.result); // 使用 Data URL 作为新贴图
+      if (fileNameEl) {
+        fileNameEl.textContent = '当前贴图：' + file.name;
+        fileNameEl.title = file.name;
+      }
+    };
+    reader.onerror = function () {
+      alert('读取图片失败，请重试');
+    };
+    reader.readAsDataURL(file);
+  });
+
+  // 启动
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
